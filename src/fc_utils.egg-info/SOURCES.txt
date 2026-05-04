@@ -1,0 +1,14 @@
+README.md
+pyproject.toml
+setup.py
+src/fc_utils/__init__.py
+src/fc_utils/accounts.py
+src/fc_utils/chrome.py
+src/fc_utils/custom_functions.py
+src/fc_utils/ebay.py
+src/fc_utils/firefox.py
+src/fc_utils/outlook.py
+src/fc_utils.egg-info/PKG-INFO
+src/fc_utils.egg-info/SOURCES.txt
+src/fc_utils.egg-info/dependency_links.txt
+src/fc_utils.egg-info/top_level.txt
