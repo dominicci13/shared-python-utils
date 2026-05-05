@@ -1,6 +1,5 @@
 README.md
 pyproject.toml
-setup.py
 src/fc_utils/__init__.py
 src/fc_utils/accounts.py
 src/fc_utils/chrome.py
