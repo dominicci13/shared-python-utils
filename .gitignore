@@ -9,8 +9,8 @@ __pycache__/
 logs/
 output/
 
-# Config (local secrets)
-config/config.json
+# Config (local secrets — keep only .example files)
+config/*.json
 .env
 
 # Data files (Excel, CSV, etc.)
@@ -18,6 +18,14 @@ config/config.json
 *.xls
 *.xlsm
 *.csv
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
+
+# Claude Code
+.claude/
 
 # OS junk
 .DS_Store

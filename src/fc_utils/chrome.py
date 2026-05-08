@@ -1,32 +1,61 @@
+from __future__ import annotations
+
+import time
+
 from rich import print
 from seleniumbase import Driver
+from selenium.common.exceptions import SessionNotCreatedException
 
-##################################################################################################################################################
-def start_browser(user_data_dir: str, ChromeProfile: str, headless=True) -> object:
-    """Creates a new browser instance with Selenium, using your own profile settings.
+from fc_utils.custom_functions import kill_app
+
+
+def start_browser(
+    user_data_dir: str,
+    chrome_profile: str = "Default",
+    headless: bool = True,
+    retry_count: int = 3,
+) -> object:
+    """Launch a SeleniumBase Chrome instance, retrying automatically on failure.
+
+    Uses a persistent Chrome user profile. If the browser fails to start (e.g., a
+    stale Chrome process is blocking the session), kills existing Chrome instances
+    and retries after a short delay.
 
     Args:
-        user_data_dir (str): Full path for the folder where Google Chrome store its profiles. \n
-                            On Windows: "C:/Users/YourUsername/AppData/Local/Google/Chrome/User Data" \n
-                            On MacOS: "/Users/YourUsername/Library/Application Support/Google/Chrome"
-
-        ChromeProfile (str): The name of your profile folder inside the user_data_dir path. \n
-                            Default folder names: "Default", "Profile 1", "Profile 2".
-
-        headless (bool, optional): Set as False if you want to see browser activity. Defaults to True.
+        user_data_dir (str): Full path to the Chrome User Data directory.
+            Windows: "C:/Users/<name>/AppData/Local/Google/Chrome/User Data"
+            macOS:   "/Users/<name>/Library/Application Support/Google/Chrome"
+        chrome_profile (str): Profile folder name inside user_data_dir
+            (e.g., "Default", "Profile 1", "Profile 2"). Defaults to "Default".
+        headless (bool): Run Chrome without a visible UI window. Defaults to True.
+        retry_count (int): Maximum number of retry attempts after the first failure.
+            Defaults to 3.
 
     Returns:
-        object: Returns the WebDriver object that will be used to start the browser.
+        object: SeleniumBase Driver instance ready for automation.
+
+    Raises:
+        RuntimeError: If Chrome fails to launch after all retry attempts are exhausted.
     """
-    driver = Driver(uc=True, 
-                        user_data_dir=user_data_dir, 
-                        chromium_arg=f"--profile-directory={ChromeProfile}",
-                        headless=headless)
+    last_error: Exception | None = None
 
-    if headless:
-        print("'[INFO]' Starting Google Chrome in headless mode.")
-    else:
-        print("'[INFO]' Starting Google Chrome.")
-        driver.maximize_window()
+    for attempt in range(retry_count + 1):
+        print(f"[cyan][INFO][/cyan] Launching Chrome (profile: {chrome_profile}, headless: {headless}).")
+        try:
+            driver = Driver(
+                uc=True,
+                user_data_dir=user_data_dir,
+                chromium_arg=f"--profile-directory={chrome_profile}",
+                headless=headless,
+            )
+            if not headless:
+                driver.maximize_window()
+            print("[green][SUCCESS][/green] Chrome launched successfully.")
+            return driver
+        except (SessionNotCreatedException, RuntimeError) as exc:
+            last_error = exc
+            print(f"[bold red][ERROR][/bold red] Failed to launch Chrome (attempt {attempt + 1}/{retry_count + 1}). Killing existing instances.")
+            kill_app("chrome")
+            time.sleep(5)
 
-    return driver
+    raise RuntimeError(f"Chrome failed to launch after {retry_count + 1} attempts.") from last_error

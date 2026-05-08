@@ -4,9 +4,21 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fc-utils"
-version = "0.1.0"
-description = "Shared Python utilities for SellerOrg automations"
+version = "0.2.0"
+description = "Shared Python utilities for Amazon and eBay seller automations"
 requires-python = ">=3.10"
+dependencies = [
+    "rich>=13.0.0",
+    "selenium>=4.0.0",
+    "seleniumbase>=4.0.0",
+    "xlwings>=0.30.0",
+    "pandas>=2.0.0",
+    "pyodbc>=5.0.0",
+    "pywin32>=306",
+    "python-dotenv>=1.0.0",
+    "pillow>=10.0.0",
+    "apscheduler>=3.10",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
