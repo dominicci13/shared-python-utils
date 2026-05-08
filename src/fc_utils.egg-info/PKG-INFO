@@ -1,5 +1,0 @@
-Metadata-Version: 2.4
-Name: fc-utils
-Version: 0.1.0
-Summary: Shared Python utilities for SellerOrg automations
-Requires-Python: >=3.10

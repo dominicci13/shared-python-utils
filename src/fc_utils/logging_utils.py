@@ -4,16 +4,23 @@ import logging
 from pathlib import Path
 from datetime import datetime
 
-
 def setup_logger(
     name: str,
     logs_dir: str | Path = "logs",
     level: int = logging.INFO,
 ) -> logging.Logger:
-    """
-    Creates a logger that writes to both:
-    1. Terminal
-    2. A dated log file inside /logs
+    """Create a logger that writes to both the terminal and a dated log file.
+
+    The log file is created inside logs_dir with the name pattern "{name}_YYYY-MM-DD.log".
+    Safe to call multiple times — returns the existing logger if already configured.
+
+    Args:
+        name (str): Logger name and log file prefix (e.g., "aged_report").
+        logs_dir (str | Path, optional): Directory where log files are written. Defaults to "logs".
+        level (int, optional): Logging level (e.g., logging.DEBUG, logging.INFO). Defaults to logging.INFO.
+
+    Returns:
+        logging.Logger: Configured logger instance.
     """
 
     logs_path = Path(logs_dir)
