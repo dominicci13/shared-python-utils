@@ -28,7 +28,7 @@ from fc_utils.custom_functions import (
     yesterday,
 )
 from fc_utils.database_utils import insert_dataframe, safe_execute, upsert_dataframe
-from fc_utils.ebay import CustomizeOffersTable
+from fc_utils.ebay import customize_offers_table
 from fc_utils.excel_utils import paste_image_to_sheet, refresh_workbook, run_macro
 from fc_utils.logging_utils import setup_logger
 from fc_utils.outlook import get_account, get_verification_code, send_email
@@ -72,7 +72,7 @@ __all__ = [
     "safe_execute",
     "upsert_dataframe",
     # ebay
-    "CustomizeOffersTable",
+    "customize_offers_table",
     # excel_utils
     "paste_image_to_sheet",
     "refresh_workbook",

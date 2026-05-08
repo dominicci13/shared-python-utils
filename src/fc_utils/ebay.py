@@ -8,7 +8,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementClickInterceptedException, ElementNotInteractableException
 
 ###############################################################################################################################################
-def CustomizeOffersTable(driver: object, sold: bool = False, watchers: bool = False, views: bool = False) -> None:
+def customize_offers_table(driver: object, sold: bool = False, watchers: bool = False, views: bool = False) -> None:
     """Customize the Active Listings table columns in the eBay seller dashboard.
 
     Clicks the 'Customize table' button, resets to defaults, then selects the
