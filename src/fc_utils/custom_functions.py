@@ -1,5 +1,9 @@
-import os
+from __future__ import annotations
+
 import io
+import os
+import subprocess
+import tempfile
 import time
 import pyodbc
 import win32clipboard
@@ -11,275 +15,246 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 ###############################################################################################################################################
-def DownloadFinished(browser: str, path: str) -> bool:
-    """
-    Check if a download is finished by checking if the file with the temporary extension is gone (e.g. ".crdownload" if Chrome, or ".part" if Firefox).
+def download_finished(browser: str, path: str) -> bool:
+    """Check whether a browser download in the given folder has completed.
 
-    :param browser: The browser used to download the file (e.g. "Chrome" or "Firefox").
-    :param path: The folder path where the download is happening (e.g. "C:\\User\\YourUsername\\Downloads").
+    Looks for temporary download extensions (.crdownload for Chrome, .part for Firefox).
+    Returns True only when none are present.
 
-    :return bool: True if the download is finished, False otherwise.
+    Args:
+        browser (str): Browser name — "chrome" or "firefox" (case-insensitive).
+        path (str): Folder path where the download is happening (e.g., "C:/Users/Username/Downloads").
+
+    Returns:
+        bool: True if no in-progress download files are found, False otherwise.
+
+    Raises:
+        ValueError: If an unsupported browser name is provided.
     """
     if browser.lower() == "chrome":
-        for file in os.listdir(path):
-            if file.endswith(".crdownload"):
-                return False
-            
-        return True
-    
+        return not any(f.endswith(".crdownload") for f in os.listdir(path))
     elif browser.lower() == "firefox":
-        for file in os.listdir(path):
-            if file.endswith(".part"):
-                return False
-        
-        return True
-            
+        return not any(f.endswith(".part") for f in os.listdir(path))
     else:
         raise ValueError(f"Unsupported browser: {browser}")
 
+
 ###############################################################################################################################################
-def shadow_element(driver: object, host_selector: str, element_selector: str, wait: int = 10, css: bool = True, Class: bool = False, xpath: bool = False, click=True) -> str:
-    """
-    Clicks an element located within a shadow DOM using the provided CSS selectors.
+def shadow_element(
+    driver: object,
+    host_selector: str,
+    element_selector: str,
+    wait: int = 10,
+    css: bool = True,
+    Class: bool = False,
+    xpath: bool = False,
+    click: bool = True,
+) -> str | None:
+    """Click or retrieve text from an element inside a shadow DOM.
 
-    :param driver: The WebDriver instance to execute.
-    :param host_selector: The CSS selector for the host element within the shadow DOM.
-    :param element_selector: The CSS selector for the element within the shadow DOM.
-    :param (int, optional) wait: The maximum time to wait for the element to be present. Defaults to 10.
-    :param (bool, optional) css: If True, uses CSS selector for the host element. Defaults to True.
-    :param (bool, optional) Class: If True, uses class selector for the host element. Defaults to False.
-    :param (bool, optional) xpath: If True, uses XPath selector for the host element. Defaults to False.
-    :param (bool, optional) click: Whether to click the element after finding it. If set to False, it retrieves the text. Defaults to True.
+    Exactly one of css, Class, or xpath must be True to specify how the shadow
+    host element is located.
 
-    :return: None if the element is found and clicked, otherwise raises an exception.
+    Args:
+        driver (object): Active SeleniumBase WebDriver instance.
+        host_selector (str): Selector string for the shadow host element.
+        element_selector (str): Selector string for the target element inside the shadow root.
+        wait (int): Max seconds to wait for the host element. Defaults to 10.
+        css (bool): Use CSS selector for the host. Defaults to True.
+        Class (bool): Use class name selector for the host. Defaults to False.
+        xpath (bool): Use XPath selector for the host. Defaults to False.
+        click (bool): Click the element if True, return its text if False. Defaults to True.
+
+    Returns:
+        str | None: The element's text if click=False, otherwise None.
+
+    Raises:
+        ValueError: If none of css, Class, or xpath is True.
     """
-    #Check if at least one of the selectors is provided
     if Class or xpath:
         css = False
 
-    #Check if at least one of the selectors is provided
     if not css and not Class and not xpath:
-        raise ValueError("Please provide either a CSS selector, a Class selector or a XPATH selector.")
+        raise ValueError("Provide exactly one selector type: css, Class, or xpath.")
 
+    by_map = {
+        css: By.CSS_SELECTOR,
+        Class: By.CLASS_NAME,
+        xpath: By.XPATH,
+    }
+    by = by_map[True]
 
-    if css:
-        #Wait for the host element to be present and accessible within the shadow DOM
-        shadow_host = WebDriverWait(driver, wait).until(EC.presence_of_element_located((
-            By.CSS_SELECTOR,
-            host_selector
-        )))
-        shadow_root = driver.execute_script('return arguments[0].shadowRoot', shadow_host)
-
-        #Use JavaScript to access the shadow root and then find the element within it
-        element = shadow_root.find_element(By.CSS_SELECTOR, element_selector)
-
-    elif Class:
-        #Wait for the host element to be present and accessible within the shadow DOM
-        shadow_host = WebDriverWait(driver, wait).until(EC.presence_of_element_located((
-            By.CLASS_NAME,
-            host_selector
-        )))
-        shadow_root = driver.execute_script('return arguments[0].shadowRoot', shadow_host)
-
-        #Use JavaScript to access the shadow root and then find the element within it
-        element = shadow_root.find_element(By.CLASS_NAME, element_selector)
-
-    elif xpath:
-        #Wait for the host element to be present and accessible within the shadow DOM
-        shadow_host = WebDriverWait(driver, wait).until(EC.presence_of_element_located((
-            By.XPATH,
-            host_selector
-        )))
-        shadow_root = driver.execute_script('return arguments[0].shadowRoot', shadow_host)
-
-        #Use JavaScript to access the shadow root and then find the element within it
-        element = shadow_root.find_element(By.XPATH, element_selector)
+    shadow_host = WebDriverWait(driver, wait).until(
+        EC.presence_of_element_located((by, host_selector))
+    )
+    shadow_root = driver.execute_script("return arguments[0].shadowRoot", shadow_host)
+    element = shadow_root.find_element(by, element_selector)
 
     if click:
         element.click()
     else:
         return element.text
 
-###############################################################################################################################################
-#Get tomorrow day
-def tomorrow() -> str:
-    tomorrow: datetime = datetime.now() + timedelta(days=1)
-    return tomorrow.strftime("%A")
 
-#Get yesterday day
-def yesterday() -> str:
-    yesterday: datetime = datetime.now() - timedelta(days=1)
-    return yesterday
+###############################################################################################################################################
+def tomorrow() -> str:
+    """Return the name of tomorrow's weekday (e.g., 'Monday')."""
+    return (datetime.now() + timedelta(days=1)).strftime("%A")
+
+
+def yesterday() -> datetime:
+    """Return a datetime object representing yesterday at the current time."""
+    return datetime.now() - timedelta(days=1)
+
 
 ###############################################################################################################################################
 def first_empty_row(sheet: object, column: str, cell: str) -> int:
+    """Find the first empty row in a column, starting from a given cell.
 
+    Args:
+        sheet (object): xlwings Sheet object to search.
+        column (str): Column letter to check for empty values (e.g., "A").
+        cell (str): Starting cell that anchors the table range (e.g., "A1").
+
+    Returns:
+        int: Row number of the first empty cell, or the row after the last table row if none found.
     """
-    Finds the first empty row in the specified column of a sheet starting from a given row.
-
-    :param sheet: The sheet object (could be from libraries like xlwings or openpyxl).
-    :param column: The column letter to check for the empty row (e.g., "A").
-    :param cell: The starting cell that defines the table's start range in the sheet (e.g., "A1").
-
-    :return: int: The row number of the first empty row or the next available row after the table.
-    """
-    #Get the table range starting at the provided cell
     table = sheet.range(cell).expand("table")
-    initial_range = int("".join([char for char in cell if char.isnumeric()]))
+    start_row = int("".join(c for c in cell if c.isnumeric()))
 
-    #Iterate over rows in the table range
-    for row in range(initial_range, table.rows.count + initial_range):
-        cell_value = sheet.range(f"{column}{row}").value
-
-        #Check if the first cell in the row is empty
-        if cell_value is None or str(cell_value).strip() == "":
+    for row in range(start_row, table.rows.count + start_row):
+        value = sheet.range(f"{column}{row}").value
+        if value is None or str(value).strip() == "":
             return row
-        
-    #If no empty row is found, return the row after the last row in the table
-    return table.rows.count + initial_range
+
+    return table.rows.count + start_row
+
 
 ###############################################################################################################################################
-def files_info(path: str) -> dict[str]:
+def files_info(path: str) -> list[dict]:
+    """Return metadata for every file found under the given directory tree.
 
+    Args:
+        path (str): Root directory to walk (e.g., "C:/Users/Your_User").
+
+    Returns:
+        list[dict]: One dict per file with keys: Name, Size, Date Created,
+            Date Modified, Extension, Path.
     """
-    Finds all files on the given path.
-
-    :param path: The full root path to check (e.g., "C:\\Users\\Your_User").
-
-    :return dict: A dictionary with details of all files that were found in the main path provided and all subfolders. \n
-        The provided details are: Name, Size, Date Modified, Extension and full Path.
-    """
-        
-    #Prints information about files in a given directory, including their names, sizes, date modified, and file extensions.
-    files_info = []
-    for root, dirs, files in os.walk(path):
-
+    results = []
+    for root, _, files in os.walk(path):
         for file_name in files:
-
-            file_info = {
+            full_path = os.path.join(root, file_name)
+            results.append({
                 "Name": file_name,
-                "Size": os.path.getsize(os.path.join(path, root, file_name)),
-                "Date Created": os.path.getmtime(os.path.join(path, root, file_name)),
-                "Date Modified": datetime.fromtimestamp(os.path.getmtime(os.path.join(path, root, file_name))),
+                "Size": os.path.getsize(full_path),
+                "Date Created": os.path.getctime(full_path),
+                "Date Modified": datetime.fromtimestamp(os.path.getmtime(full_path)),
                 "Extension": os.path.splitext(file_name)[1].lower(),
-                "Path": os.path.join(path, root, file_name)
-            }
-            files_info.append(file_info)
+                "Path": full_path,
+            })
+    return results
 
-    return files_info
-
-###############################################################################################################################################
-def update_directory(workbook: object) -> None:
-
-    """
-    Writes the current working directory in a given Excel workbook, in the already existing DataVal sheet (If sheet does not exists, it will return an error).
-
-    :param workbook: The workbook object (could be from libraries like xlwings or openpyxl).
-    """
-
-    directory: str = os.getcwd()
-    sheet = workbook.sheets("DataVal")
-    sheet.range("B1").value = directory
-
-    print("'[INFO]' Directory updated successfully.")
 
 ###############################################################################################################################################
 def find_file(filepath: str, filename: str) -> bool:
+    """Poll a directory until a file with the given name prefix is found.
+
+    Args:
+        filepath (str): Directory to search (e.g., "C:/Users/Administrator/Documents").
+        filename (str): Filename prefix to match (e.g., "report" matches "report_2024.csv").
+
+    Returns:
+        bool: True once the file is found.
     """
-    Loops through all files in the given directory and keeps looping until found.
+    while True:
+        for file in files_info(filepath):
+            if file["Name"].startswith(filename):
+                print(f"[cyan][INFO][/cyan] File found: [cyan]{file['Name']}[/cyan]")
+                return True
+        print("[yellow][WARNING][/yellow] File not found. Trying again in 5 seconds.")
+        time.sleep(5)
 
-    :param filepath: Path to the file (e.g., "C:\\Users\\Administrator\\Documents")
-    :param filename: Name of the file to search for (e.g., "example.txt")
-
-    :return: True if the file exists.
-    """
-
-    #Check if the specified file exists in the given directory
-    files = []
-    found = False
-
-    while not found:
-        files = files_info(filepath)
-        
-        for file in files:
-            name: str = file['Name']
-
-            if name.startswith(filename):
-                print(f"'[INFO]' File found: {name}")
-                found = True
-                return found
-        
-        if not found:
-            print("'[WARNING]' File not found. Trying again in 5 seconds...")
-            time.sleep(5)
 
 ###############################################################################################################################################
-#Create clipboard function to copy objects to clipboard
-def send_to_clipboard(clip_type, data) -> None:
+def send_to_clipboard(clip_type: int, data: bytes) -> None:
+    """Write data to the Windows clipboard.
+
+    Args:
+        clip_type (int): Clipboard format constant (e.g., win32clipboard.CF_DIB).
+        data (bytes): Raw data to place on the clipboard.
+    """
     win32clipboard.OpenClipboard()
     win32clipboard.EmptyClipboard()
     win32clipboard.SetClipboardData(clip_type, data)
     win32clipboard.CloseClipboard()
 
+
 ###############################################################################################################################################
-#Function to paste image from clipboard to Excel using xlwings
-def paste_image_from_clipboard(sheet, cell) -> None:
-    image_path: str = os.path.abspath('temp_image.png')
+def paste_image_from_clipboard(sheet: object, cell: str) -> None:
+    """Read a DIB image from the clipboard and paste it into an xlwings sheet.
+
+    Converts the clipboard bitmap to PNG, saves it to a temp file, inserts it into
+    the sheet anchored at the top-left corner of the target cell, then removes the temp file.
+
+    Args:
+        sheet (object): xlwings Sheet object to paste the image into.
+        cell (str): Cell address used to position the image (e.g., "B5").
+    """
+    image_path = os.path.join(tempfile.gettempdir(), "fc_clipboard_image.png")
+
     win32clipboard.OpenClipboard()
     try:
-        if win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_DIB):
-            data: str = win32clipboard.GetClipboardData(win32clipboard.CF_DIB)
-            bmp_data = io.BytesIO(data)
-            bmp_data.seek(0)
-            img = Image.open(bmp_data)
+        if not win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_DIB):
+            print("[yellow][WARNING][/yellow] No image data found in clipboard.")
+            return
 
-            # Convert BMP to PNG and save
-            img.save(image_path, 'PNG')
-
-            # Debugging: Check if the file is saved and accessible
-            if os.path.exists(image_path):
-
-                # Add image to Excel sheet
-                try:
-                    sheet.pictures.add(image_path, left=sheet.range(cell).left, top=sheet.range(cell).top)
-                except Exception as e:
-                    print(f"'[ERROR]' Failed to paste image: {e}")
-            else:
-                print(f"'[ERROR]' Failed to save image to {image_path}")
-        else:
-            print("'[WARNING]' No image data found in clipboard.")
+        data = win32clipboard.GetClipboardData(win32clipboard.CF_DIB)
+        img = Image.open(io.BytesIO(data))
+        img.save(image_path, "PNG")
     finally:
         win32clipboard.CloseClipboard()
 
+    try:
+        sheet.pictures.add(image_path, left=sheet.range(cell).left, top=sheet.range(cell).top)
+    except Exception as e:
+        print(f"[bold red][ERROR][/bold red] Failed to paste image: {e}")
+    finally:
+        if os.path.exists(image_path):
+            os.remove(image_path)
+
+
 ##################################################################################################################################################
 def kill_app(app_name: str) -> None:
-    """
-    Kills all instances of a specified application.
+    """Force-kill all running instances of the specified application.
 
     Args:
-        app_name (str): Name of the application to kill. \n
-        Examples: "chrome", "firefox", "excel", etc.
+        app_name (str): Executable name without extension (e.g., "chrome", "excel", "chromedriver").
     """
-    #Using taskkill command to kill all instances of chrome.exe
-    os.system(f"taskkill /f /im {app_name}.exe")
+    subprocess.run(
+        ["taskkill", "/f", "/im", f"{app_name}.exe"],
+        capture_output=True,
+    )
+
 
 ##################################################################################################################################################
-def SQLConnection(database: str) -> object:
-    """
-    Establishes a connection to a specified SQL database using pyodbc.
+def sql_connection(database: str) -> object:
+    """Open a pyodbc connection to the local SQL Server Express instance.
 
     Args:
         database (str): Name of the database to connect to.
 
     Returns:
-        conn (object): The connection object for the SQL connection to the database.
+        object: An open pyodbc connection object.
+
+    Raises:
+        pyodbc.Error: If the connection cannot be established.
     """
-    print(f"'[INFO]' Connecting with SQL Database: '{database}'.")
+    print(f"[cyan][INFO][/cyan] Connecting to SQL database: [cyan]{database}[/cyan].")
     conn = pyodbc.connect(
         "DRIVER={SQL Server};"
-        "SERVER=localhost\SQLEXPRESS;"
+        r"SERVER=localhost\SQLEXPRESS;"
         f"DATABASE={database};"
     )
-
-    print(f"'[INFO]' Successfully connected to the '{database}' database!")
+    print(f"[green][SUCCESS][/green] Connected to [cyan]{database}[/cyan] successfully.")
     return conn
