@@ -96,9 +96,9 @@ upsert_dataframe(cursor, "dbo.Inventory", df, columns=["Sku", "Qty"], key_column
 Customize the eBay Active Listings table columns in the seller dashboard.
 
 ```python
-from fc_utils import CustomizeOffersTable
+from fc_utils import customize_offers_table
 
-CustomizeOffersTable(driver, sold=True, watchers=True)
+customize_offers_table(driver, sold=True, watchers=True)
 ```
 
 ### `excel_utils`
