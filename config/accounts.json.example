@@ -15,5 +15,15 @@
     "SellerAccount1": "Default",
     "SellerAccount2": "Profile 1",
     "SellerAccount3": "Profile 2"
+  },
+
+  "feedback_manager_sheets": {
+    "Account1": 1,
+    "Account2": 2
+  },
+
+  "feedback_manager_rating_cells": {
+    "Account1": "C6",
+    "Account2": "I6"
   }
 }
