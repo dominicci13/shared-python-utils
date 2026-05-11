@@ -5,7 +5,7 @@ Shared Python utilities for Amazon and eBay seller automation.
 ## Installation
 
 ```bash
-pip install git+https://github.com/***REDACTED***/shared-python-utils.git
+pip install git+https://github.com/dominicci13/shared-python-utils.git
 ```
 
 Or in editable mode for local development:
