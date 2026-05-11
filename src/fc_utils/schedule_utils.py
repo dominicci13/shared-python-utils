@@ -34,8 +34,5 @@ def run_on_schedule(
         cron_kwargs["day_of_week"] = day_of_week
 
     scheduler.add_job(func, "cron", **cron_kwargs)
-
-    next_run = scheduler.get_jobs()[0].next_run_time
-    print(f"[cyan][INFO][/cyan] Scheduler started. Next run: [bold]{next_run}[/bold]")
-
+    print(f"[cyan][INFO][/cyan] Scheduler started.")
     scheduler.start()
