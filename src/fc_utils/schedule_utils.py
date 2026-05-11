@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime, timezone
 
+from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED
 from apscheduler.schedulers.blocking import BlockingScheduler
 from rich import print
 
@@ -33,6 +35,25 @@ def run_on_schedule(
     if day_of_week is not None:
         cron_kwargs["day_of_week"] = day_of_week
 
-    scheduler.add_job(func, "cron", **cron_kwargs)
-    print(f"[cyan][INFO][/cyan] Scheduler started.")
+    job = scheduler.add_job(func, "cron", **cron_kwargs)
+    now = datetime.now(timezone.utc)
+    next_run = job.trigger.get_next_fire_time(None, now)
+    if next_run is not None:
+        local_next = next_run.astimezone()
+        day_name = local_next.strftime("%A")
+        formatted = local_next.strftime("%Y-%m-%d %H:%M:%S")
+        print(f"[cyan][INFO][/cyan] Scheduler started. Next run: [cyan]{day_name}, {formatted}[/cyan]")
+    else:
+        print("[cyan][INFO][/cyan] Scheduler started.")
+
+    def _listener(event):
+        j = scheduler.get_job(event.job_id)
+        if event.exception:
+            print(f"[bold red][ERROR][/bold red] Scheduled job failed: {event.exception}")
+        if j and j.next_run_time:
+            day_name = j.next_run_time.strftime("%A")
+            formatted = j.next_run_time.strftime("%Y-%m-%d %H:%M:%S")
+            print(f"[cyan][INFO][/cyan] Next run: [cyan]{day_name}, {formatted}[/cyan]")
+
+    scheduler.add_listener(_listener, EVENT_JOB_EXECUTED | EVENT_JOB_ERROR)
     scheduler.start()
