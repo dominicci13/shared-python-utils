@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import signal
 from collections.abc import Callable
 from datetime import datetime, timezone
 
@@ -18,7 +19,9 @@ def run_on_schedule(
 
     Blocks the calling thread indefinitely, firing `func` at the specified
     time each day (or on the specified days of the week). Logs the next
-    scheduled run time after each execution.
+    scheduled run time after each execution. Ctrl+C cleanly stops the
+    scheduler — on Windows this requires waking APScheduler's blocking wait,
+    which the installed SIGINT handler does.
 
     Args:
         func (Callable): The function to call on each scheduled trigger.
@@ -56,4 +59,18 @@ def run_on_schedule(
             print(f"[cyan][INFO][/cyan] Next run: [cyan]{day_name}, {formatted}[/cyan]")
 
     scheduler.add_listener(_listener, EVENT_JOB_EXECUTED | EVENT_JOB_ERROR)
-    scheduler.start()
+
+    # On Windows, BlockingScheduler's threading.Event.wait blocks in C until
+    # the next fire time, so SIGINT (Ctrl+C) is queued but not delivered until
+    # the wait returns on its own. Shutting down from a SIGINT handler sets
+    # the scheduler's internal event, which wakes the wait immediately.
+    def _handle_sigint(signum, frame):
+        print("\n[yellow][WARNING][/yellow] Ctrl+C received, stopping scheduler.")
+        scheduler.shutdown(wait=False)
+
+    signal.signal(signal.SIGINT, _handle_sigint)
+
+    try:
+        scheduler.start()
+    finally:
+        print("[cyan][INFO][/cyan] Scheduler stopped.")

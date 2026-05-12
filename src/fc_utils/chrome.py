@@ -40,7 +40,7 @@ def start_browser(
     last_error: Exception | None = None
 
     for attempt in range(retry_count + 1):
-        print(f"[cyan][INFO][/cyan] Launching Chrome (profile: {chrome_profile}, headless: {headless}).")
+        print(f"[cyan][INFO][/cyan] Launching Chrome (profile: [cyan]{chrome_profile}[/cyan], headless: {headless}).")
         try:
             driver = Driver(
                 uc=True,

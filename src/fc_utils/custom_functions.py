@@ -4,40 +4,13 @@ import io
 import os
 import subprocess
 import tempfile
-import time
 import pyodbc
 import win32clipboard
 from PIL import Image
 from rich import print
-from datetime import datetime, timedelta
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-
-###############################################################################################################################################
-def download_finished(browser: str, path: str) -> bool:
-    """Check whether a browser download in the given folder has completed.
-
-    Looks for temporary download extensions (.crdownload for Chrome, .part for Firefox).
-    Returns True only when none are present.
-
-    Args:
-        browser (str): Browser name — "chrome" or "firefox" (case-insensitive).
-        path (str): Folder path where the download is happening (e.g., "C:/Users/Username/Downloads").
-
-    Returns:
-        bool: True if no in-progress download files are found, False otherwise.
-
-    Raises:
-        ValueError: If an unsupported browser name is provided.
-    """
-    if browser.lower() == "chrome":
-        return not any(f.endswith(".crdownload") for f in os.listdir(path))
-    elif browser.lower() == "firefox":
-        return not any(f.endswith(".part") for f in os.listdir(path))
-    else:
-        raise ValueError(f"Unsupported browser: {browser}")
-
 
 ###############################################################################################################################################
 def shadow_element(
@@ -52,17 +25,18 @@ def shadow_element(
 ) -> str | None:
     """Click or retrieve text from an element inside a shadow DOM.
 
-    Exactly one of css, Class, or xpath must be True to specify how the shadow
-    host element is located.
+    Exactly one of css, Class, or xpath must be True to specify how both the
+    shadow host and inner element are located. If Class or xpath is True, css
+    is treated as False automatically.
 
     Args:
         driver (object): Active SeleniumBase WebDriver instance.
         host_selector (str): Selector string for the shadow host element.
         element_selector (str): Selector string for the target element inside the shadow root.
         wait (int): Max seconds to wait for the host element. Defaults to 10.
-        css (bool): Use CSS selector for the host. Defaults to True.
-        Class (bool): Use class name selector for the host. Defaults to False.
-        xpath (bool): Use XPath selector for the host. Defaults to False.
+        css (bool): Use CSS selector. Defaults to True.
+        Class (bool): Use class name selector. Defaults to False.
+        xpath (bool): Use XPath selector. Defaults to False.
         click (bool): Click the element if True, return its text if False. Defaults to True.
 
     Returns:
@@ -74,15 +48,14 @@ def shadow_element(
     if Class or xpath:
         css = False
 
-    if not css and not Class and not xpath:
-        raise ValueError("Provide exactly one selector type: css, Class, or xpath.")
-
-    by_map = {
-        css: By.CSS_SELECTOR,
-        Class: By.CLASS_NAME,
-        xpath: By.XPATH,
-    }
-    by = by_map[True]
+    if Class:
+        by = By.CLASS_NAME
+    elif xpath:
+        by = By.XPATH
+    elif css:
+        by = By.CSS_SELECTOR
+    else:
+        raise ValueError("Provide one selector type: css, Class, or xpath.")
 
     shadow_host = WebDriverWait(driver, wait).until(
         EC.presence_of_element_located((by, host_selector))
@@ -94,17 +67,6 @@ def shadow_element(
         element.click()
     else:
         return element.text
-
-
-###############################################################################################################################################
-def tomorrow() -> str:
-    """Return the name of tomorrow's weekday (e.g., 'Monday')."""
-    return (datetime.now() + timedelta(days=1)).strftime("%A")
-
-
-def yesterday() -> datetime:
-    """Return a datetime object representing yesterday at the current time."""
-    return datetime.now() - timedelta(days=1)
 
 
 ###############################################################################################################################################
@@ -128,52 +90,6 @@ def first_empty_row(sheet: object, column: str, cell: str) -> int:
             return row
 
     return table.rows.count + start_row
-
-
-###############################################################################################################################################
-def files_info(path: str) -> list[dict]:
-    """Return metadata for every file found under the given directory tree.
-
-    Args:
-        path (str): Root directory to walk (e.g., "C:/Users/Your_User").
-
-    Returns:
-        list[dict]: One dict per file with keys: Name, Size, Date Created,
-            Date Modified, Extension, Path.
-    """
-    results = []
-    for root, _, files in os.walk(path):
-        for file_name in files:
-            full_path = os.path.join(root, file_name)
-            results.append({
-                "Name": file_name,
-                "Size": os.path.getsize(full_path),
-                "Date Created": os.path.getctime(full_path),
-                "Date Modified": datetime.fromtimestamp(os.path.getmtime(full_path)),
-                "Extension": os.path.splitext(file_name)[1].lower(),
-                "Path": full_path,
-            })
-    return results
-
-
-###############################################################################################################################################
-def find_file(filepath: str, filename: str) -> bool:
-    """Poll a directory until a file with the given name prefix is found.
-
-    Args:
-        filepath (str): Directory to search (e.g., "C:/Users/Administrator/Documents").
-        filename (str): Filename prefix to match (e.g., "report" matches "report_2024.csv").
-
-    Returns:
-        bool: True once the file is found.
-    """
-    while True:
-        for file in files_info(filepath):
-            if file["Name"].startswith(filename):
-                print(f"[cyan][INFO][/cyan] File found: [cyan]{file['Name']}[/cyan]")
-                return True
-        print("[yellow][WARNING][/yellow] File not found. Trying again in 5 seconds.")
-        time.sleep(5)
 
 
 ###############################################################################################################################################

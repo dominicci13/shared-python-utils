@@ -1,66 +1,11 @@
 from __future__ import annotations
 
 import os
-import smtplib
 import tempfile
-import traceback
 from rich import print
 from datetime import datetime
-from email.message import EmailMessage
 from fc_utils import outlook, custom_functions
 from fc_utils.config_utils import get_env
-
-
-def send_error_email(
-    smtp_server: str,
-    smtp_port: int,
-    sender_email: str,
-    sender_password: str,
-    recipient_email: str,
-    automation_name: str,
-    error: Exception,
-) -> None:
-    """Send an error alert via SMTP when an automation fails.
-
-    Args:
-        smtp_server (str): SMTP server hostname.
-        smtp_port (int): SMTP server port.
-        sender_email (str): Email address to send from.
-        sender_password (str): Password for the sender account.
-        recipient_email (str): Email address to send the alert to.
-        automation_name (str): Human-readable name of the automation.
-        error (Exception): The exception that caused the failure.
-
-    Raises:
-        smtplib.SMTPException: If the SMTP connection or authentication fails.
-    """
-    message = EmailMessage()
-    message["Subject"] = f"Automation Failed: {automation_name}"
-    message["From"] = sender_email
-    message["To"] = recipient_email
-
-    error_details = "".join(
-        traceback.format_exception(type(error), error, error.__traceback__)
-    )
-
-    message.set_content(
-        f"""
-The automation failed.
-
-Automation:
-{automation_name}
-
-Error:
-{repr(error)}
-
-Traceback:
-{error_details}
-"""
-    )
-
-    with smtplib.SMTP_SSL(smtp_server, smtp_port) as smtp:
-        smtp.login(sender_email, sender_password)
-        smtp.send_message(message)
 
 
 def handle_crash(driver: object | None, error_traceback: str, automation_name: str) -> None:

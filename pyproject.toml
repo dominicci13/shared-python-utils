@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fc-utils"
-version = "0.2.0"
+version = "0.3.0"
 description = "Shared Python utilities for Amazon and eBay seller automations"
 requires-python = ">=3.10"
 dependencies = [
@@ -15,7 +15,6 @@ dependencies = [
     "pandas>=2.0.0",
     "pyodbc>=5.0.0",
     "pywin32>=306",
-    "python-dotenv>=1.0.0",
     "pillow>=10.0.0",
     "apscheduler>=3.10",
 ]

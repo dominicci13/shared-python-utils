@@ -26,6 +26,7 @@ build/
 
 # Claude Code
 .claude/
+tasks/
 
 # OS junk
 .DS_Store

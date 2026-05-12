@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+from datetime import datetime
 from pathlib import Path
 
 from rich import print
@@ -57,6 +58,32 @@ def wait_for_download(directory: str, extension: str = ".csv", timeout_sec: int 
         time.sleep(2)
 
     raise TimeoutError(f"No '{extension}' file appeared in '{directory}' within {timeout_sec}s.")
+
+
+def latest_modified_date(path: str) -> datetime | None:
+    """Return the most-recent file modification timestamp within a directory tree.
+
+    Walks `path` recursively and returns the highest modification time found
+    across every file as a `datetime`, or None if the tree contains no files.
+
+    Args:
+        path (str): Root directory to walk.
+
+    Returns:
+        datetime | None: Most-recent modification datetime, or None if no files
+            are found under `path`.
+
+    Raises:
+        FileNotFoundError: If `path` does not exist.
+    """
+    latest: float | None = None
+    for root, _, files in os.walk(path):
+        for name in files:
+            mtime = os.path.getmtime(os.path.join(root, name))
+            if latest is None or mtime > latest:
+                latest = mtime
+
+    return datetime.fromtimestamp(latest) if latest is not None else None
 
 
 def clear_directory(directory: str, extension: str | None = None) -> None:
