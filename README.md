@@ -21,7 +21,7 @@ pip install -e .
 
 ## Configuration
 
-Some modules load runtime config from `config/accounts.json` in the working directory. Copy the example and fill in your values:
+Some modules load runtime config from `config/accounts.json` next to the entry script (falling back to the working directory). Copy the example and fill in your values:
 
 ```bash
 cp config/accounts.json.example config/accounts.json
@@ -45,12 +45,16 @@ from fc_utils import AMAZON_ACCOUNT_NAMES, EBAY_PROFILES, amazon_login
 ```
 
 ### `alert_utils`
-Send error alert emails and attach crash tracebacks via SMTP.
+Capture browser screenshots and tab URLs on crash, send a crash report via Outlook, and clean up automation processes.
 
 ```python
-from fc_utils import send_error_email, handle_crash
+import traceback
+from fc_utils import handle_crash
 
-send_error_email(subject="Job failed", body="<p>Details</p>")
+try:
+    run_automation()
+except Exception:
+    handle_crash(driver, traceback.format_exc(), automation_name="My Job")
 ```
 
 ### `chrome`
@@ -73,23 +77,22 @@ db_name = get_env("DB_NAME", required=True)
 ```
 
 ### `custom_functions`
-General-purpose helpers: clipboard, shadow DOM, file scanning, SQL connection, date utilities.
+General-purpose helpers: clipboard, shadow DOM, file scanning, SQL connection, process control.
 
 ```python
-from fc_utils import sql_connection, kill_app, tomorrow, yesterday
+from fc_utils import sql_connection, kill_app
 
 conn = sql_connection("MyDatabase")
 kill_app("chrome")
 ```
 
 ### `database_utils`
-Parameterized DataFrame inserts and upserts for SQL Server via pyodbc.
+Parameterized DataFrame inserts for SQL Server via pyodbc.
 
 ```python
-from fc_utils import insert_dataframe, upsert_dataframe
+from fc_utils import insert_dataframe
 
 insert_dataframe(cursor, "dbo.Orders", df, columns=["OrderId", "Status"])
-upsert_dataframe(cursor, "dbo.Inventory", df, columns=["Sku", "Qty"], key_columns=["Sku"])
 ```
 
 ### `ebay`
@@ -120,16 +123,6 @@ from fc_utils import create_dir_structure, wait_for_download, clear_directory
 create_dir_structure("C:/automation", ["logs", "output/reports"])
 path = wait_for_download("C:/Downloads", extension=".csv", timeout_sec=120)
 clear_directory("C:/Downloads", extension=".csv")
-```
-
-### `logging_utils`
-Set up a Rich-formatted logger with optional file output.
-
-```python
-from fc_utils import setup_logger
-
-logger = setup_logger("my_script", log_file="logs/my_script.log")
-logger.info("Starting job")
 ```
 
 ### `outlook`
