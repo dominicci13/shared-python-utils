@@ -5,32 +5,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-def load_env(env_path: str | Path = ".env") -> None:
-    """Load environment variables from a .env file into os.environ.
-
-    Skips blank lines and lines beginning with '#'. If the file does not exist,
-    the function returns silently without raising an error.
-
-    Args:
-        env_path (str | Path, optional): Path to the .env file. Defaults to ".env".
-    """
-    env_file = Path(env_path)
-
-    if not env_file.exists():
-        return
-
-    for line in env_file.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-
-        if not line or line.startswith("#"):
-            continue
-
-        if "=" not in line:
-            continue
-
-        key, value = line.split("=", 1)
-        os.environ[key.strip()] = value.strip()
-
 def get_env(key: str, default: Any = None, required: bool = False) -> Any:
     """Retrieve an environment variable, with optional default and required enforcement.
 

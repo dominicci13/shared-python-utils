@@ -116,6 +116,7 @@ def get_verification_code(
     subject_contains: str,
     timeout_sec: int = 60,
     body_extractor: Callable[[str], str] = lambda body: body.split()[0],
+    consume: bool = False,
 ) -> str | None:
     """Poll an Outlook inbox for an OTP/verification-code email and extract the code.
 
@@ -125,10 +126,13 @@ def get_verification_code(
     Args:
         account (str): Email address of the Outlook account to check (e.g., "username@server.com").
         sender_contains (str): Substring to match against the sender address (case-insensitive).
+            Pass "" to match any sender.
         subject_contains (str): Substring to match against the email subject (case-insensitive).
         timeout_sec (int): Maximum seconds to wait before giving up. Defaults to 60.
         body_extractor (Callable[[str], str]): Function that receives the email body and
             returns the verification code. Defaults to returning the first whitespace-delimited token.
+        consume (bool): If True, mark the matched message as read and delete it after the
+            code is extracted, so subsequent calls don't see the same OTP. Defaults to False.
 
     Returns:
         str | None: The extracted verification code, or None if no matching email was found
@@ -143,7 +147,11 @@ def get_verification_code(
                 sender = (message.SenderEmailAddress or "").lower()
                 subject = (message.Subject or "").lower()
                 if sender_contains.lower() in sender and subject_contains.lower() in subject:
-                    return body_extractor(message.Body)
+                    code = body_extractor(message.Body)
+                    if consume:
+                        message.Unread = False
+                        message.Delete()
+                    return code
             except Exception:
                 continue
         time.sleep(10)
