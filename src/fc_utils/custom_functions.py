@@ -73,23 +73,33 @@ def shadow_element(
 def first_empty_row(sheet: object, column: str, cell: str) -> int:
     """Find the first empty row in a column, starting from a given cell.
 
+    Reads the target column's value range in a single COM call and scans
+    for the first empty cell in pure Python. This is dramatically faster
+    than the previous one-cell-per-iteration approach for tables with many
+    rows (one COM round-trip total instead of N).
+
     Args:
         sheet (object): xlwings Sheet object to search.
         column (str): Column letter to check for empty values (e.g., "A").
         cell (str): Starting cell that anchors the table range (e.g., "A1").
 
     Returns:
-        int: Row number of the first empty cell, or the row after the last table row if none found.
+        int: Row number of the first empty cell, or the row after the last
+            table row if every cell is non-empty.
     """
     table = sheet.range(cell).expand("table")
     start_row = int("".join(c for c in cell if c.isnumeric()))
+    end_row = start_row + table.rows.count - 1
 
-    for row in range(start_row, table.rows.count + start_row):
-        value = sheet.range(f"{column}{row}").value
-        if value is None or str(value).strip() == "":
-            return row
+    values = sheet.range(f"{column}{start_row}:{column}{end_row}").value
+    if not isinstance(values, list):
+        values = [values]
 
-    return table.rows.count + start_row
+    for offset, value in enumerate(values):
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return start_row + offset
+
+    return end_row + 1
 
 
 ###############################################################################################################################################
