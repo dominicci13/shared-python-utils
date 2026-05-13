@@ -26,6 +26,7 @@ from fc_utils.custom_functions import (
 from fc_utils.database_utils import insert_dataframe, safe_execute
 from fc_utils.ebay import customize_offers_table
 from fc_utils.excel_utils import paste_image_to_sheet, refresh_workbook, run_macro
+from fc_utils.logging_utils import setup_logging
 from fc_utils.outlook import get_account, get_verification_code, send_email
 from fc_utils.schedule_utils import run_on_schedule
 from fc_utils.screenshot_utils import crop_to_box, crop_to_element, paste_to_excel
@@ -67,6 +68,8 @@ __all__ = [
     "paste_image_to_sheet",
     "refresh_workbook",
     "run_macro",
+    # logging_utils
+    "setup_logging",
     # outlook
     "get_account",
     "get_verification_code",
