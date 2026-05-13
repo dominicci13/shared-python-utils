@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import signal
+import time
 from collections.abc import Callable
 from datetime import datetime, timezone
 
 from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED
-from apscheduler.schedulers.blocking import BlockingScheduler
+from apscheduler.schedulers.background import BackgroundScheduler
 from rich import print
 
 
@@ -17,23 +17,31 @@ def run_on_schedule(
 ) -> None:
     """Run a function on a recurring cron schedule using APScheduler.
 
-    Blocks the calling thread indefinitely, firing `func` at the specified
-    time each day (or on the specified days of the week). Logs the next
-    scheduled run time after each execution. Ctrl+C cleanly stops the
-    scheduler — on Windows this requires waking APScheduler's blocking wait,
-    which the installed SIGINT handler does.
+    Starts a ``BackgroundScheduler`` and blocks the main thread with a
+    1-second ``time.sleep`` loop. ``time.sleep`` on Windows is interruptible
+    by Ctrl+C, so ``KeyboardInterrupt`` propagates immediately and the
+    scheduler is shut down cleanly. Using ``BlockingScheduler`` here instead
+    swallows Ctrl+C on Windows: its internal C-level ``threading.Event.wait``
+    blocks Python signal delivery until the wait returns on its own —
+    sometimes hours later.
+
+    The main-thread loop uses near-zero CPU (the kernel parks the thread
+    between ticks) — the 1-second tick only sets the Ctrl+C response
+    latency. The scheduler's own daemon thread blocks efficiently until the
+    next job fire time.
 
     Args:
         func (Callable): The function to call on each scheduled trigger.
         hour (int): Hour of day to run (0–23, local time).
         minute (int): Minute of hour to run (0–59).
-        day_of_week (str | None): APScheduler day-of-week expression (e.g., "mon-fri",
-            "mon,wed,fri"). Pass None to run every day. Defaults to None.
+        day_of_week (str | None): APScheduler day-of-week expression
+            (e.g., "mon-fri", "mon,wed,fri"). Pass None to run every day.
+            Defaults to None.
 
     Raises:
         ValueError: If hour or minute are out of valid range.
     """
-    scheduler = BlockingScheduler()
+    scheduler = BackgroundScheduler()
     cron_kwargs: dict = {"hour": hour, "minute": minute}
     if day_of_week is not None:
         cron_kwargs["day_of_week"] = day_of_week
@@ -59,18 +67,14 @@ def run_on_schedule(
             print(f"[cyan][INFO][/cyan] Next run: [cyan]{day_name}, {formatted}[/cyan]")
 
     scheduler.add_listener(_listener, EVENT_JOB_EXECUTED | EVENT_JOB_ERROR)
-
-    # On Windows, BlockingScheduler's threading.Event.wait blocks in C until
-    # the next fire time, so SIGINT (Ctrl+C) is queued but not delivered until
-    # the wait returns on its own. Shutting down from a SIGINT handler sets
-    # the scheduler's internal event, which wakes the wait immediately.
-    def _handle_sigint(signum, frame):
-        print("\n[yellow][WARNING][/yellow] Ctrl+C received, stopping scheduler.")
-        scheduler.shutdown(wait=False)
-
-    signal.signal(signal.SIGINT, _handle_sigint)
+    scheduler.start()
 
     try:
-        scheduler.start()
+        while True:
+            time.sleep(1)
+    except (KeyboardInterrupt, SystemExit):
+        print("\n[yellow][WARNING][/yellow] Ctrl+C received, stopping scheduler.")
     finally:
+        if scheduler.running:
+            scheduler.shutdown(wait=False)
         print("[cyan][INFO][/cyan] Scheduler stopped.")
