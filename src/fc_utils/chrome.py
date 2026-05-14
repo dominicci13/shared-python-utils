@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import time
 
-from rich import print
 from seleniumbase import Driver
 from selenium.common.exceptions import SessionNotCreatedException
 
 from fc_utils.custom_functions import kill_app
+import logging
+
+log = logging.getLogger(__name__)
 
 
 def start_browser(
@@ -40,7 +42,7 @@ def start_browser(
     last_error: Exception | None = None
 
     for attempt in range(retry_count + 1):
-        print(f"[cyan][INFO][/cyan] Launching Chrome (profile: [cyan]{chrome_profile}[/cyan], headless: {headless}).")
+        log.info(f"Launching Chrome (profile: [cyan]{chrome_profile}[/cyan], headless: {headless}).")
         try:
             driver = Driver(
                 uc=True,
@@ -50,11 +52,11 @@ def start_browser(
             )
             if not headless:
                 driver.maximize_window()
-            print("[green][SUCCESS][/green] Chrome launched successfully.")
+            log.success("Chrome launched successfully.")
             return driver
         except (SessionNotCreatedException, RuntimeError) as exc:
             last_error = exc
-            print(f"[bold red][ERROR][/bold red] Failed to launch Chrome (attempt {attempt + 1}/{retry_count + 1}). Killing existing instances.")
+            log.error(f"Failed to launch Chrome (attempt {attempt + 1}/{retry_count + 1}). Killing existing instances.")
             kill_app("chrome")
             time.sleep(5)
 

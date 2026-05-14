@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import os
 import tempfile
-from rich import print
 from datetime import datetime
 from fc_utils import outlook, custom_functions
 from fc_utils.config_utils import get_env
+import logging
+
+log = logging.getLogger(__name__)
 
 
 def handle_crash(driver: object | None, error_traceback: str, automation_name: str) -> None:
@@ -37,9 +39,9 @@ def handle_crash(driver: object | None, error_traceback: str, automation_name: s
                 f"{automation_name.replace(' ', '_')}_crash.png"
             )
             driver.save_screenshot(screenshot_path)
-            print(f"[cyan][INFO][/cyan] Crash screenshot saved to [cyan]{screenshot_path}[/cyan].")
+            log.info(f"Crash screenshot saved to [cyan]{screenshot_path}[/cyan].")
         except Exception:
-            print("[yellow][WARNING][/yellow] Could not capture screenshot.")
+            log.warning("Could not capture screenshot.")
             screenshot_path = None
 
         try:
@@ -62,7 +64,7 @@ def handle_crash(driver: object | None, error_traceback: str, automation_name: s
     <pre>{error_traceback}</pre>
     """
 
-    print(f"[cyan][INFO][/cyan] Sending crash report for [cyan]{automation_name}[/cyan].")
+    log.info(f"Sending crash report for [cyan]{automation_name}[/cyan].")
     attachments = [screenshot_path] if screenshot_path else []
     outlook.send_email(
         account=alert_email,
@@ -76,10 +78,10 @@ def handle_crash(driver: object | None, error_traceback: str, automation_name: s
 
     if screenshot_path and os.path.exists(screenshot_path):
         os.remove(screenshot_path)
-        print("[cyan][INFO][/cyan] Temporary screenshot deleted.")
+        log.info("Temporary screenshot deleted.")
 
-    print("[cyan][INFO][/cyan] Killing automation processes.")
+    log.info("Killing automation processes.")
     for process in ["excel", "chrome", "chromedriver"]:
         custom_functions.kill_app(process)
 
-    print("[green][SUCCESS][/green] Crash report sent and processes cleaned up.")
+    log.success("Crash report sent and processes cleaned up.")

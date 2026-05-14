@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Iterator
-from rich import print
 from pathlib import Path
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -11,6 +10,9 @@ from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.support import expected_conditions as EC
 from fc_utils import outlook
 from fc_utils.config_utils import get_env, load_config_safe
+import logging
+
+log = logging.getLogger(__name__)
 
 
 def _accounts_config_path() -> Path:
@@ -63,7 +65,7 @@ def sellercloud(driver: object, username: str, password: str, site: str = "Delta
         password (str): SellerCloud login password.
         site (str): SellerCloud environment — "Delta" or "Alpha". Defaults to "Delta".
     """
-    print("[cyan][INFO][/cyan] Logging into [bold]SellerCloud[/bold].")
+    log.info("Logging into [cyan]SellerCloud[/cyan].")
 
     if site == "Delta":
         url = get_env("SELLERCLOUD_DELTA_URL", required=True)
@@ -146,7 +148,7 @@ def amazon_login(
             pass_input = WebDriverWait(driver, 5).until(EC.presence_of_element_located((
                 By.CSS_SELECTOR, "#ap_password"
             )))
-            print("[cyan][INFO][/cyan] Seller Central logged out. Logging in.")
+            log.info("Seller Central logged out. Logging in.")
             pass_input.send_keys(password)
             pass_input.send_keys(Keys.ENTER)
         except TimeoutException:
@@ -156,7 +158,7 @@ def amazon_login(
             By.CSS_SELECTOR, "#auth-mfa-otpcode"
         )))
 
-        print("[cyan][INFO][/cyan] Waiting for the OTP verification code.")
+        log.info("Waiting for the OTP verification code.")
         code = outlook.get_verification_code(
             account=email,
             sender_contains=email,
@@ -169,11 +171,11 @@ def amazon_login(
         if code:
             code_input.send_keys(code)
             code_input.send_keys(Keys.ENTER)
-            print("[green][SUCCESS][/green] Logged in to Seller Central successfully.")
+            log.success("Logged in to Seller Central successfully.")
             return code
 
         if attempt < max_attempts - 1:
-            print("[bold red][ERROR][/bold red] Failed to log in to Amazon. Trying again.")
+            log.error("Failed to log in to Amazon. Trying again.")
             driver.get(retry_url)
             driver.switch_to_window(0)
 
@@ -194,7 +196,7 @@ def ebay(password: str, driver: object) -> None:
         By.ID,
         "pass"
     )))
-    print("[cyan][INFO][/cyan] Logging into [bold]eBay[/bold].")
+    log.info("Logging into [cyan]eBay[/cyan].")
 
     # Clear and enter password
     pass_input.send_keys(Keys.CONTROL + "a")
@@ -202,4 +204,4 @@ def ebay(password: str, driver: object) -> None:
     pass_input.send_keys(password)
     pass_input.send_keys(Keys.ENTER)
 
-    print("[green][SUCCESS][/green] Logged in to [bold]eBay[/bold] successfully.")
+    log.success("Logged in to [cyan]eBay[/cyan] successfully.")

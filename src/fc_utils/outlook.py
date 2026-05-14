@@ -6,9 +6,9 @@ import traceback
 from typing import Callable
 
 import win32com.client
-from rich import print
+import logging
 
-
+log = logging.getLogger(__name__)
 def get_account(account: str, folder: str) -> object:
     """Return the Outlook Items collection for a given account and folder.
 
@@ -95,7 +95,7 @@ def send_email(
                 if os.path.exists(attachment):
                     email.Attachments.Add(attachment)
                 else:
-                    print(f"[yellow][WARNING][/yellow] Attachment not found: [cyan]{attachment}[/cyan]")
+                    log.warning(f"Attachment not found: [cyan]{attachment}[/cyan]")
 
         if show:
             email.Display()
@@ -105,7 +105,7 @@ def send_email(
             email.Send()
 
     except Exception:
-        print("[bold red][ERROR][/bold red] An error occurred while sending the email.")
+        log.error("An error occurred while sending the email.")
         traceback.print_exc()
         raise
 

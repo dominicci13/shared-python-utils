@@ -4,9 +4,9 @@ import os
 import time
 from datetime import datetime
 from pathlib import Path
+import logging
 
-from rich import print
-
+log = logging.getLogger(__name__)
 
 def create_dir_structure(base: str, folders: list[str]) -> None:
     """Create a set of subdirectories under a base path.
@@ -24,7 +24,7 @@ def create_dir_structure(base: str, folders: list[str]) -> None:
     for folder in folders:
         path = Path(base) / folder
         path.mkdir(parents=True, exist_ok=True)
-        print(f"[cyan][INFO][/cyan] Directory ready: [cyan]{path}[/cyan]")
+        log.info(f"Directory ready: [cyan]{path}[/cyan]")
 
 
 def wait_for_download(directory: str, extension: str = ".csv", timeout_sec: int = 60) -> str:
@@ -53,7 +53,7 @@ def wait_for_download(directory: str, extension: str = ".csv", timeout_sec: int 
                 and not entry.name.endswith(".crdownload")
                 and not entry.name.endswith(".part")
             ):
-                print(f"[green][SUCCESS][/green] Download complete: [cyan]{entry.name}[/cyan]")
+                log.success(f"Download complete: [cyan]{entry.name}[/cyan]")
                 return entry.path
         time.sleep(2)
 
@@ -107,4 +107,4 @@ def clear_directory(directory: str, extension: str | None = None) -> None:
                 os.remove(entry.path)
                 deleted += 1
 
-    print(f"[green][SUCCESS][/green] Cleared [bold]{deleted}[/bold] file(s) from [cyan]{directory}[/cyan].")
+    log.success(f"Cleared [cyan]{deleted}[/cyan] file(s) from [cyan]{directory}[/cyan].")

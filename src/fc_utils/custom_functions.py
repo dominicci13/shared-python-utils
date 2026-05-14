@@ -7,10 +7,12 @@ import tempfile
 import pyodbc
 import win32clipboard
 from PIL import Image
-from rich import print
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+import logging
+
+log = logging.getLogger(__name__)
 
 ###############################################################################################################################################
 def shadow_element(
@@ -132,7 +134,7 @@ def paste_image_from_clipboard(sheet: object, cell: str) -> None:
     win32clipboard.OpenClipboard()
     try:
         if not win32clipboard.IsClipboardFormatAvailable(win32clipboard.CF_DIB):
-            print("[yellow][WARNING][/yellow] No image data found in clipboard.")
+            log.warning("No image data found in clipboard.")
             return
 
         data = win32clipboard.GetClipboardData(win32clipboard.CF_DIB)
@@ -144,7 +146,7 @@ def paste_image_from_clipboard(sheet: object, cell: str) -> None:
     try:
         sheet.pictures.add(image_path, left=sheet.range(cell).left, top=sheet.range(cell).top)
     except Exception as e:
-        print(f"[bold red][ERROR][/bold red] Failed to paste image: {e}")
+        log.error(f"Failed to paste image: {e}")
     finally:
         if os.path.exists(image_path):
             os.remove(image_path)
@@ -176,11 +178,11 @@ def sql_connection(database: str) -> object:
     Raises:
         pyodbc.Error: If the connection cannot be established.
     """
-    print(f"[cyan][INFO][/cyan] Connecting to SQL database: [cyan]{database}[/cyan].")
+    log.info(f"Connecting to SQL database: [cyan]{database}[/cyan].")
     conn = pyodbc.connect(
         "DRIVER={SQL Server};"
         r"SERVER=localhost\SQLEXPRESS;"
         f"DATABASE={database};"
     )
-    print(f"[green][SUCCESS][/green] Connected to [cyan]{database}[/cyan] successfully.")
+    log.success(f"Connected to [cyan]{database}[/cyan] successfully.")
     return conn

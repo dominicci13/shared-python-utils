@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.0 — 2026-05-14
+
+### Improvements
+- Every fc_utils module that emitted progress output via `rich.print` now uses the standard `logging` API: each module declares `log = logging.getLogger(__name__)` at module scope, and all `print()` calls have been converted to the matching `log.info()` / `log.success()` / `log.warning()` / `log.error()` calls. This means:
+  - Consumer scripts see a consistent stream of formatted log lines from fc_utils utilities (Chrome launches, scheduler ticks, Outlook polling, etc.) — same `[INFO]` / `[SUCCESS]` / `[WARNING]` / `[ERROR]` prefixes the formatter produces for application code.
+  - Library code no longer assumes a writable stdout; when called from a context without a configured logger (tests, REPL), the output is silently dropped instead of attempting to render Rich markup.
+  - The redundant inline `[cyan][INFO][/cyan]` / `[bold red][ERROR][/bold red]` markup was stripped from all 47 fc_utils log call sites (the formatter from v0.4.0 supplies the colored level tag).
+
+### Removed
+- `from rich import print` shadowing in every fc_utils module — the logger is now the only output sink.
+
+### Packaging
+- Bumped version to `0.5.0`
+
+---
+
 ## 0.4.0 — 2026-05-13
 
 ### New
