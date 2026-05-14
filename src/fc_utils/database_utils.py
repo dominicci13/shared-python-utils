@@ -4,9 +4,9 @@ import traceback
 
 import pandas as pd
 import pyodbc
-from rich import print
+import logging
 
-
+log = logging.getLogger(__name__)
 def insert_dataframe(cursor: pyodbc.Cursor, table_name: str, df: pd.DataFrame, columns: list[str]) -> None:
     """Insert all rows of a DataFrame into a SQL Server table.
 
@@ -49,6 +49,6 @@ def safe_execute(cursor: pyodbc.Cursor, query: str, values: tuple) -> bool:
         cursor.execute(query, values)
         return True
     except pyodbc.Error:
-        print("[bold red][ERROR][/bold red] [pyodbc.Error] Failed to execute query.")
+        log.error("[pyodbc.Error] Failed to execute query.")
         traceback.print_exc()
         return False

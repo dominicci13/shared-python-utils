@@ -1,6 +1,7 @@
 import ctypes
-from rich import print
+import logging
 
+log = logging.getLogger(__name__)
 # Windows MessageBox button and icon constants
 _MB_YESNO = 0x04
 _MB_ICONQUESTION = 0x20
@@ -19,7 +20,7 @@ def ask_user(message: str, title: str = "Script") -> bool:
     Returns:
         bool: True if the user clicked Yes, False if they clicked No.
     """
-    print(f"[yellow][WARNING][/yellow] Waiting for user confirmation: [cyan]{title}[/cyan].")
+    log.warning(f"Waiting for user confirmation: [cyan]{title}[/cyan].")
 
     result = ctypes.windll.user32.MessageBoxW(
         0,

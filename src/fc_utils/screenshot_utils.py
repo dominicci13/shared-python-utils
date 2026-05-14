@@ -4,9 +4,10 @@ import os
 import tempfile
 
 from PIL import Image, ImageGrab
-from rich import print
-
 from fc_utils.excel_utils import paste_image_to_sheet
+import logging
+
+log = logging.getLogger(__name__)
 
 _TEMP_CROPPED = os.path.join(tempfile.gettempdir(), "fc_screenshot_cropped.png")
 
@@ -80,4 +81,4 @@ def paste_to_excel(workbook_path: str, sheet: str | int, cell: str, image_path: 
     finally:
         if os.path.exists(image_path):
             os.remove(image_path)
-            print(f"[cyan][INFO][/cyan] Temporary image deleted: [cyan]{image_path}[/cyan]")
+            log.info(f"Temporary image deleted: [cyan]{image_path}[/cyan]")
