@@ -6,9 +6,9 @@ from datetime import datetime, timezone
 
 from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED
 from apscheduler.schedulers.background import BackgroundScheduler
-from rich import print
+import logging
 
-
+log = logging.getLogger(__name__)
 def run_on_schedule(
     func: Callable,
     hour: int,
@@ -53,18 +53,18 @@ def run_on_schedule(
         local_next = next_run.astimezone()
         day_name = local_next.strftime("%A")
         formatted = local_next.strftime("%Y-%m-%d %H:%M:%S")
-        print(f"[cyan][INFO][/cyan] Scheduler started. Next run: [cyan]{day_name}, {formatted}[/cyan]")
+        log.info(f"Scheduler started. Next run: [cyan]{day_name}, {formatted}[/cyan]")
     else:
-        print("[cyan][INFO][/cyan] Scheduler started.")
+        log.info("Scheduler started.")
 
     def _listener(event):
         j = scheduler.get_job(event.job_id)
         if event.exception:
-            print(f"[bold red][ERROR][/bold red] Scheduled job failed: {event.exception}")
+            log.error(f"Scheduled job failed: {event.exception}")
         if j and j.next_run_time:
             day_name = j.next_run_time.strftime("%A")
             formatted = j.next_run_time.strftime("%Y-%m-%d %H:%M:%S")
-            print(f"[cyan][INFO][/cyan] Next run: [cyan]{day_name}, {formatted}[/cyan]")
+            log.info(f"Next run: [cyan]{day_name}, {formatted}[/cyan]")
 
     scheduler.add_listener(_listener, EVENT_JOB_EXECUTED | EVENT_JOB_ERROR)
     scheduler.start()
@@ -73,8 +73,8 @@ def run_on_schedule(
         while True:
             time.sleep(1)
     except (KeyboardInterrupt, SystemExit):
-        print("\n[yellow][WARNING][/yellow] Ctrl+C received, stopping scheduler.")
+        log.info("\n[yellow][WARNING][/yellow] Ctrl+C received, stopping scheduler.")
     finally:
         if scheduler.running:
             scheduler.shutdown(wait=False)
-        print("[cyan][INFO][/cyan] Scheduler stopped.")
+        log.info("Scheduler stopped.")

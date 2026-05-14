@@ -4,6 +4,9 @@ import os
 import json
 from pathlib import Path
 from typing import Any
+import logging
+
+log = logging.getLogger(__name__)
 
 def get_env(key: str, default: Any = None, required: bool = False) -> Any:
     """Retrieve an environment variable, with optional default and required enforcement.

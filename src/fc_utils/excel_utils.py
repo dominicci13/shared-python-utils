@@ -4,9 +4,9 @@ import time
 from pathlib import Path
 
 import xlwings as xw
-from rich import print
+import logging
 
-
+log = logging.getLogger(__name__)
 def refresh_workbook(workbook_path: str, macro_name: str = "Module1.Refresh", wait: int = 30) -> None:
     """Open an Excel workbook, run a refresh macro, and save it.
 
@@ -25,7 +25,7 @@ def refresh_workbook(workbook_path: str, macro_name: str = "Module1.Refresh", wa
         FileNotFoundError: If the workbook does not exist at the given path.
         xlwings.XlwingsError: If the macro cannot be found or fails to run.
     """
-    print(f"[cyan][INFO][/cyan] Opening workbook: [cyan]{Path(workbook_path).name}[/cyan]")
+    log.info(f"Opening workbook: [cyan]{Path(workbook_path).name}[/cyan]")
 
     with xw.App(visible=False) as excel:
         excel.display_alerts = False
@@ -33,7 +33,7 @@ def refresh_workbook(workbook_path: str, macro_name: str = "Module1.Refresh", wa
 
         wb = excel.books.open(workbook_path)
 
-        print(f"[cyan][INFO][/cyan] Running macro: [cyan]{macro_name}[/cyan]")
+        log.info(f"Running macro: [cyan]{macro_name}[/cyan]")
         wb.macro(macro_name)()
         time.sleep(wait)
 
@@ -43,7 +43,7 @@ def refresh_workbook(workbook_path: str, macro_name: str = "Module1.Refresh", wa
         excel.display_alerts = True
         excel.screen_updating = True
 
-    print("[green][SUCCESS][/green] Workbook refreshed and saved successfully.")
+    log.success("Workbook refreshed and saved successfully.")
 
 
 def run_macro(workbook_path: str, macro_name: str) -> None:
@@ -61,7 +61,7 @@ def run_macro(workbook_path: str, macro_name: str) -> None:
         FileNotFoundError: If the workbook does not exist at the given path.
         xlwings.XlwingsError: If the macro cannot be found or fails to run.
     """
-    print(f"[cyan][INFO][/cyan] Running macro [cyan]{macro_name}[/cyan] in [cyan]{Path(workbook_path).name}[/cyan]")
+    log.info(f"Running macro [cyan]{macro_name}[/cyan] in [cyan]{Path(workbook_path).name}[/cyan]")
 
     with xw.App(visible=False) as excel:
         excel.display_alerts = False
@@ -75,7 +75,7 @@ def run_macro(workbook_path: str, macro_name: str) -> None:
         excel.display_alerts = True
         excel.screen_updating = True
 
-    print(f"[green][SUCCESS][/green] Macro [cyan]{macro_name}[/cyan] completed successfully.")
+    log.success(f"Macro [cyan]{macro_name}[/cyan] completed successfully.")
 
 
 def paste_image_to_sheet(workbook_path: str, sheet: str | int, cell: str, image_path: str) -> None:
@@ -94,7 +94,7 @@ def paste_image_to_sheet(workbook_path: str, sheet: str | int, cell: str, image_
         FileNotFoundError: If the workbook or image file does not exist.
         xlwings.XlwingsError: If the sheet cannot be found or the image fails to insert.
     """
-    print(f"[cyan][INFO][/cyan] Inserting image into [cyan]{Path(workbook_path).name}[/cyan] at {cell}.")
+    log.info(f"Inserting image into [cyan]{Path(workbook_path).name}[/cyan] at {cell}.")
 
     with xw.App(visible=False) as excel:
         excel.display_alerts = False
@@ -109,4 +109,4 @@ def paste_image_to_sheet(workbook_path: str, sheet: str | int, cell: str, image_
         excel.display_alerts = True
         excel.screen_updating = True
 
-    print(f"[green][SUCCESS][/green] Image inserted at [cyan]{cell}[/cyan] successfully.")
+    log.success(f"Image inserted at [cyan]{cell}[/cyan] successfully.")

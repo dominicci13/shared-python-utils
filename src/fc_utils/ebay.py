@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import time
-from rich import print
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementClickInterceptedException, ElementNotInteractableException
+import logging
+
+log = logging.getLogger(__name__)
 
 ###############################################################################################################################################
 def customize_offers_table(driver: object, sold: bool = False, watchers: bool = False, views: bool = False) -> None:
@@ -21,7 +23,7 @@ def customize_offers_table(driver: object, sold: bool = False, watchers: bool = 
         watchers (bool, optional): Include the 'Watchers' column. Defaults to False.
         views (bool, optional): Include the 'Views (30 days)' column. Defaults to False.
     """
-    print("[cyan][INFO][/cyan] Customizing the offers table.")
+    log.info("Customizing the offers table.")
     customizing_table = True
     while customizing_table:
         try:
@@ -49,7 +51,7 @@ def customize_offers_table(driver: object, sold: bool = False, watchers: bool = 
             header = driver.find_element(By.CLASS_NAME, "dialog-title").text
 
             if header == "Add or review discounts":
-                print(f"[cyan][INFO][/cyan] Closing the [cyan]{header}[/cyan] dialog.")
+                log.info(f"Closing the [cyan]{header}[/cyan] dialog.")
                 driver.find_element(
                     By.CSS_SELECTOR,
                     "#sh-page > div.card-old > div > div.overlays > div.sme-discount-layer > span > div > div.lightbox-dialog__window.lightbox-dialog__window--animate.keyboard-trap--active > div.lightbox-dialog__header > button"
@@ -60,14 +62,14 @@ def customize_offers_table(driver: object, sold: bool = False, watchers: bool = 
                 driver.refresh()
                 time.sleep(5)
 
-    print("[cyan][INFO][/cyan] Restoring table to default columns.")
+    log.info("Restoring table to default columns.")
     WebDriverWait(driver, 10).until(EC.element_to_be_clickable((
         By.ID,
         "customize-restoreDefaults"
     ))).click()
     time.sleep(3)
 
-    print("[cyan][INFO][/cyan] Selecting required columns.")
+    log.info("Selecting required columns.")
 
     # "Item Specifics" checkbox is not always present
     try:
@@ -99,8 +101,8 @@ def customize_offers_table(driver: object, sold: bool = False, watchers: bool = 
     except NoSuchElementException:
         pass
 
-    print("[cyan][INFO][/cyan] Saving table configuration.")
+    log.info("Saving table configuration.")
     driver.find_element(By.ID, "customize-save").click()
 
-    print("[cyan][INFO][/cyan] Waiting for the page to reload.")
+    log.info("Waiting for the page to reload.")
     time.sleep(10)
