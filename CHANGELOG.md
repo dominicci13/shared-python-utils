@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.1 — 2026-05-14
+
+### Fixes
+- `sellercloud.download_report` no longer hardcodes a `.xlsx` extension when looking for the downloaded file. It now derives the expected extension from `output_path.suffix`, so CSV, XLSX, and TSV exports all work. Falls back to `.xlsx` only if `output_path` has no suffix at all.
+
+---
+
 ## 0.6.0 — 2026-05-14
 
 ### New module — `sellercloud`

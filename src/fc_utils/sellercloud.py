@@ -496,7 +496,12 @@ def download_report(
 
     The downloaded filename is derived from the URL: SellerCloud names
     its files after the trailing query-string value (e.g. ``?id=12345``
-    → ``12345.xlsx``).
+    → ``12345.csv`` / ``12345.xlsx`` / ``12345.tsv``). The expected
+    extension is taken from ``output_path``'s suffix, so pass
+    ``output_path=".../report.csv"`` for CSV templates,
+    ``".../report.xlsx"`` for Excel templates, or ``".../report.tsv"``
+    for tab-separated templates. If ``output_path`` has no suffix,
+    defaults to ``.xlsx``.
 
     Args:
         driver (object): Active SeleniumBase WebDriver instance.
@@ -506,8 +511,10 @@ def download_report(
             Usually the ``user_data_dir`` profile's Downloads folder, or
             an automation-specific override.
         output_path (str | Path): Final destination for the moved file
-            (including the filename). Parent directories are created on
-            demand.
+            (including the filename and the extension). Parent
+            directories are created on demand. The file's suffix is
+            also used to recognize the downloaded file in
+            ``download_path``.
         poll_interval_sec (int): Seconds to wait between download-button
             polls when SellerCloud is still preparing the report.
             Defaults to ``60``.
@@ -539,9 +546,10 @@ def download_report(
             )
             time.sleep(poll_interval_sec)
 
-    job_id = download_url.rsplit("=", 1)[-1]
-    downloaded_file = Path(download_path) / f"{job_id}.xlsx"
     output = Path(output_path).resolve()
+    extension = output.suffix or ".xlsx"
+    job_id = download_url.rsplit("=", 1)[-1]
+    downloaded_file = Path(download_path) / f"{job_id}{extension}"
 
     log.info(f"Waiting for [cyan]{downloaded_file.name}[/cyan] to finish downloading.")
     deadline = time.monotonic() + file_timeout_sec
