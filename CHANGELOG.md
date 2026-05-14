@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.0 — 2026-05-14
+
+### New module — `sellercloud`
+- `request_custom_export(driver, custom_template, sku_list=None, product_group=None)` — drives the SellerCloud Manage Catalog grid through the Export Products wizard, picks a named Custom Export template, and returns the notify-download URL. Validates that exactly one of `sku_list` / `product_group` is supplied (raises `ValueError` otherwise) and enforces SellerCloud's 100-SKU-per-request cap.
+- `download_report(driver, download_url, download_path, output_path, ...)` — polls the notify-download URL, clicks the download button once the report is ready, waits for the resulting `.xlsx` to land in `download_path`, and moves it to `output_path`.
+- Both functions read DOM selectors from `config/selectors.json` and URLs from `config/paths.json` (resolved relative to the entry script, mirroring `accounts.py`). Consumers ship those JSON files in their own repo (gitignored); see the new `config/selectors.json.example` and `config/paths.json.example` for the required schema.
+- Exported from the package root: `from fc_utils import request_custom_export, download_report`.
+
+### Packaging
+- Bumped version to `0.6.0`
+
+---
+
 ## 0.5.0 — 2026-05-14
 
 ### Improvements
