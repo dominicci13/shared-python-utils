@@ -27,6 +27,7 @@ build/
 # Claude Code
 .claude/
 tasks/
+ruvector.db
 
 # OS junk
 .DS_Store

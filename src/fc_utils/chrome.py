@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import time
 
+import logging
 from seleniumbase import Driver
 from selenium.common.exceptions import SessionNotCreatedException
 
 from fc_utils.custom_functions import kill_app
-import logging
 
 log = logging.getLogger(__name__)
 
