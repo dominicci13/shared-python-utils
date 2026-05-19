@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.6.1"
+__version__ = "0.6.2"
 
 from fc_utils.accounts import (
     AMAZON_ACCOUNT_NAMES,
@@ -29,7 +29,7 @@ from fc_utils.excel_utils import paste_image_to_sheet, refresh_workbook, run_mac
 from fc_utils.logging_utils import setup_logging
 from fc_utils.outlook import get_account, get_verification_code, send_email
 from fc_utils.schedule_utils import run_on_schedule
-from fc_utils.screenshot_utils import crop_to_box, crop_to_element, paste_to_excel
+from fc_utils.screenshot_utils import crop_to_box, crop_to_element, paste_to_excel, save_debug_screenshot
 from fc_utils.sellercloud import download_report, request_custom_export
 from fc_utils.ui_utils import ask_user
 
@@ -81,6 +81,7 @@ __all__ = [
     "crop_to_box",
     "crop_to_element",
     "paste_to_excel",
+    "save_debug_screenshot",
     # sellercloud
     "download_report",
     "request_custom_export",
