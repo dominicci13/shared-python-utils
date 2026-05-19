@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import os
+import re
 import tempfile
+from datetime import datetime
+from pathlib import Path
 
 from PIL import Image, ImageGrab
 from fc_utils.excel_utils import paste_image_to_sheet
@@ -10,6 +13,40 @@ import logging
 log = logging.getLogger(__name__)
 
 _TEMP_CROPPED = os.path.join(tempfile.gettempdir(), "fc_screenshot_cropped.png")
+
+
+def save_debug_screenshot(driver: object, root: str, section: str, description: str) -> str:
+    """Save a debug browser screenshot to ``screenshots/<root>/<section>/<description>_<timestamp>.png``.
+
+    Intended solely for capturing browser state at error/diagnostic points so a
+    human can review what the page looked like when something went wrong. Auto-
+    creates the folder tree under the current working directory, sanitizes
+    ``description`` for filesystem-unsafe characters, and stamps the filename
+    with the local datetime.
+
+    Args:
+        driver (object): Active Selenium/SeleniumBase WebDriver instance.
+        root (str): Top-level folder name. Use the per-account display name
+            for account-scoped flows (e.g. ``"SellerOrg"``), or a leading-
+            underscore pseudo-root for non-account flows (e.g. ``"_sellercloud"``)
+            so account folders sort cleanly together.
+        section (str): Second-level folder name. Use the calling function's
+            name so each screenshot groups with its source.
+        description (str): Human-readable label appended to the filename.
+            Whitespace and ``<>:"/\\|?*`` characters are collapsed to ``_``;
+            truncated to 80 chars. Empty descriptions fall back to ``"screenshot"``.
+
+    Returns:
+        str: Absolute path to the saved screenshot, suitable for logging.
+    """
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    safe_desc = re.sub(r'[<>:"/\\|?*\s]+', "_", description).strip("_")[:80] or "screenshot"
+    folder = Path("screenshots") / root / section
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{safe_desc}_{timestamp}.png"
+    driver.save_screenshot(str(path))
+    log.info(f"Debug screenshot saved: [cyan]{path}[/cyan]")
+    return str(path)
 
 
 def crop_to_element(element: object) -> str:
