@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.0 — 2026-05-19
+
+### New
+- `greeting.greeting_for(hour=None)` — returns the time-of-day greeting (`"Good morning"`, `"Good afternoon"`, `"Good evening"`) for the supplied or current local hour. Centralizes the four sibling repos that hand-rolled the same `if 5 <= hour <= 11 …` block.
+
+### Note
+- Dead-code audit performed across all 13 sibling repos for `upsert_dataframe`, `find_file`, `download_finished`, `files_info`, `tomorrow`, `yesterday`, `load_env`, `setup_logger`, `send_error_email` — confirmed zero callers. The functions themselves had already been removed in `0.3.0`; this audit closes the loop.
+
+### Packaging
+- Bumped version to `0.7.0`
+- Exported `greeting_for` from the package root: `from fc_utils import greeting_for`
+
+---
+
 ## 0.6.1 — 2026-05-14
 
 ### Fixes
