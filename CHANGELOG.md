@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.1 — 2026-05-20
+
+### Improvements
+- `database_utils.insert_dataframe` now embeds the failing row's column → value mapping into its `RuntimeError` message. The traceback that `alert_utils.handle_crash` packages into the crash email body therefore carries full row context — previously only the row index was reported, and the row data lived only in the local rotating log file. Eliminates the back-and-forth of SSHing to the box after a per-row insert failure.
+
+### Packaging
+- Bumped version to `0.7.1`
+
+---
+
 ## 0.7.0 — 2026-05-19
 
 ### New
