@@ -29,7 +29,13 @@ def insert_dataframe(cursor: pyodbc.Cursor, table_name: str, df: pd.DataFrame, c
     for index, row in df.iterrows():
         values = tuple(row[col] for col in columns)
         if not safe_execute(cursor, query, values):
-            raise RuntimeError(f"Insert failed at row {index + 1}. See traceback above.")
+            # Embed the failing row in the RuntimeError so handle_crash's email
+            # body carries full row context — not just the row index.
+            row_dump = "\n".join(f"  {col}: {row[col]!r}" for col in columns)
+            raise RuntimeError(
+                f"Insert failed at row {index + 1} in {table_name}.\n"
+                f"Row data:\n{row_dump}"
+            )
 
     cursor.connection.commit()
 
