@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.6.2"
+__version__ = "0.7.0"
 
 from fc_utils.accounts import (
     AMAZON_ACCOUNT_NAMES,
@@ -26,6 +26,7 @@ from fc_utils.custom_functions import (
 from fc_utils.database_utils import insert_dataframe, safe_execute
 from fc_utils.ebay import customize_offers_table
 from fc_utils.excel_utils import paste_image_to_sheet, refresh_workbook, run_macro
+from fc_utils.greeting import greeting_for
 from fc_utils.logging_utils import setup_logging
 from fc_utils.outlook import get_account, get_verification_code, send_email
 from fc_utils.schedule_utils import run_on_schedule
@@ -69,6 +70,8 @@ __all__ = [
     "paste_image_to_sheet",
     "refresh_workbook",
     "run_macro",
+    # greeting
+    "greeting_for",
     # logging_utils
     "setup_logging",
     # outlook
