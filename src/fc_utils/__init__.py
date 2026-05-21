@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.7.2"
+__version__ = "0.7.3"
 
 from fc_utils.accounts import (
     AMAZON_ACCOUNT_NAMES,
