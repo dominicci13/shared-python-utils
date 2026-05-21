@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.2 — 2026-05-20
+
+### Behavior changes
+- `excel_utils.refresh_workbook` default `macro_name` changed from `"Module1.Refresh"` to `"modUtilities.refresh"`. Reflects the Phase 3 hardening convention — one Standard Module per workbook named `modUtilities` with a synchronous `refresh()` sub. Callers that still drive a legacy `Module1.Refresh` macro must now pass it explicitly.
+
+### Packaging
+- Bumped version to `0.7.2`
+
+---
+
 ## 0.7.1 — 2026-05-20
 
 ### Improvements
