@@ -22,6 +22,11 @@ def insert_dataframe(cursor: pyodbc.Cursor, table_name: str, df: pd.DataFrame, c
     Raises:
         RuntimeError: If any row fails to insert.
     """
+    # Opt out of pandas 3.x StringDtype default. df.iterrows() under StringDtype
+    # rebuilds each row as a Series that converts None back to NaN, which pyodbc
+    # cannot bind to nullable SQL columns.
+    pd.set_option("future.infer_string", False)
+
     cols = ", ".join(columns)
     placeholders = ", ".join(["?"] * len(columns))
     query = f"INSERT INTO {table_name} ({cols}) VALUES ({placeholders})"
