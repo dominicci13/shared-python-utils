@@ -7,7 +7,7 @@ import xlwings as xw
 import logging
 
 log = logging.getLogger(__name__)
-def refresh_workbook(workbook_path: str, macro_name: str = "Module1.Refresh", wait: int = 30) -> None:
+def refresh_workbook(workbook_path: str, macro_name: str = "modUtilities.refresh", wait: int = 30) -> None:
     """Open an Excel workbook, run a refresh macro, and save it.
 
     Opens the workbook in a hidden Excel instance, executes the specified macro,
@@ -16,10 +16,12 @@ def refresh_workbook(workbook_path: str, macro_name: str = "Module1.Refresh", wa
 
     Args:
         workbook_path (str): Absolute path to the .xlsm or .xlsx workbook.
-        macro_name (str): Full macro name to execute (e.g., "Module1.Refresh").
-            Defaults to "Module1.Refresh".
-        wait (int): Seconds to wait after running the macro before saving.
-            Defaults to 30.
+        macro_name (str): Full macro name to execute (e.g., "modUtilities.refresh").
+            Defaults to "modUtilities.refresh".
+        wait (int): Seconds to wait after running the macro before saving. The
+            modern hardened macros use synchronous Power Query refresh
+            (BackgroundQuery=False) so callers should pass ``wait=0`` for
+            those. Defaults to 30 to preserve behavior for legacy macros.
 
     Raises:
         FileNotFoundError: If the workbook does not exist at the given path.
