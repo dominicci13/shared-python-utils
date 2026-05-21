@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.3 — 2026-05-21
+
+### Fixes
+- `database_utils.insert_dataframe` now opts out of pandas 3.x's StringDtype default via `pd.set_option("future.infer_string", False)`. Without this, `df.iterrows()` rebuilds each row as a Series that converts `None` back to `NaN`, which pyodbc cannot bind to nullable SQL columns — causing every insert against a DataFrame with `None` in string columns to fail. Discovered during Phase 3 live testing.
+
+### Packaging
+- Bumped version to `0.7.3`
+
+---
+
 ## 0.7.2 — 2026-05-20
 
 ### Behavior changes
