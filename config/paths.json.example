@@ -1,0 +1,4 @@
+{
+    "sellercloud_catalog_url": "https://your-tenant.delta.sellercloud.com/Inventory/ManageCatalog.aspx?",
+    "sellercloud_add_product_url": "https://your-tenant.delta.sellercloud.com/Inventory/AddNewProduct.aspx"
+}

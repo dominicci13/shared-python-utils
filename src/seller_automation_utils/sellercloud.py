@@ -1,7 +1,9 @@
 """SellerCloud Custom Export helpers.
 
-Provides reusable browser automations against
-``https://your-tenant.delta.sellercloud.com``:
+Provides reusable browser automations against a SellerCloud tenant URL
+of the form ``https://your-tenant.delta.sellercloud.com`` (the actual
+tenant URL is loaded at runtime from ``config/paths.json``, which is
+gitignored — see ``config/paths.json.example`` for the schema):
 
 * :func:`request_custom_export` — navigates to the Manage Catalog grid
   with an inline SKU or product-group filter, walks the Export wizard
@@ -13,14 +15,15 @@ Provides reusable browser automations against
 
 Both functions read DOM selectors from ``config/selectors.json`` and
 URLs from ``config/paths.json`` (both resolved relative to the entry
-script, mirroring :mod:`fc_utils.accounts`). The consumer repo owns
-those JSON files and they are typically gitignored — see
+script, mirroring :mod:`seller_automation_utils.accounts`). The consumer
+repo owns those JSON files and they are typically gitignored — see
 ``shared-python-utils/config/selectors.json.example`` and
 ``paths.json.example`` for the required schema.
 
 Both functions log via the module logger
-(``logging.getLogger("fc_utils.sellercloud")``); configure handlers at
-the application entry point with :func:`fc_utils.logging_utils.setup_logging`.
+(``logging.getLogger("seller_automation_utils.sellercloud")``); configure
+handlers at the application entry point with
+:func:`seller_automation_utils.logging_utils.setup_logging`.
 """
 
 from __future__ import annotations
@@ -370,7 +373,8 @@ def request_custom_export(
 
     Args:
         driver (object): Active SeleniumBase WebDriver instance. Must
-            already be logged in to ``your-tenant.delta.sellercloud.com``.
+            already be logged in to the SellerCloud tenant configured in
+            ``config/paths.json``.
         custom_template (str): Name of the saved Custom Export template,
             exactly as it appears in the wizard's template dropdown.
         sku_list (list[str] | None): SKUs to filter by (max
