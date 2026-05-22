@@ -6,7 +6,7 @@ import logging
 from seleniumbase import Driver
 from selenium.common.exceptions import SessionNotCreatedException
 
-from fc_utils.custom_functions import kill_app
+from seller_automation_utils.custom_functions import kill_app
 
 log = logging.getLogger(__name__)
 

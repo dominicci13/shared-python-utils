@@ -1,21 +1,21 @@
-"""fc_utils — shared utilities for Amazon and eBay seller automation."""
+"""seller_automation_utils — shared utilities for Amazon and eBay seller automation."""
 
 from __future__ import annotations
 
-__version__ = "0.7.3"
+__version__ = "1.0.0"
 
-from fc_utils.accounts import (
+from seller_automation_utils.accounts import (
     AMAZON_ACCOUNT_NAMES,
     AMAZON_URLS,
     EBAY_PROFILES,
     amazon_login,
     iter_amazon_accounts,
 )
-from fc_utils.alert_utils import handle_crash
-from fc_utils.chrome import start_browser
-from fc_utils.file_utils import clear_directory, create_dir_structure, latest_modified_date, wait_for_download
-from fc_utils.config_utils import get_env, load_config, load_config_safe
-from fc_utils.custom_functions import (
+from seller_automation_utils.alert_utils import handle_crash
+from seller_automation_utils.chrome import start_browser
+from seller_automation_utils.file_utils import clear_directory, create_dir_structure, latest_modified_date, wait_for_download
+from seller_automation_utils.config_utils import get_env, load_config, load_config_safe
+from seller_automation_utils.custom_functions import (
     first_empty_row,
     kill_app,
     paste_image_from_clipboard,
@@ -23,16 +23,16 @@ from fc_utils.custom_functions import (
     shadow_element,
     sql_connection,
 )
-from fc_utils.database_utils import insert_dataframe, safe_execute
-from fc_utils.ebay import customize_offers_table
-from fc_utils.excel_utils import paste_image_to_sheet, refresh_workbook, run_macro
-from fc_utils.greeting import greeting_for
-from fc_utils.logging_utils import setup_logging
-from fc_utils.outlook import get_account, get_verification_code, send_email
-from fc_utils.schedule_utils import run_on_schedule
-from fc_utils.screenshot_utils import crop_to_box, crop_to_element, paste_to_excel, save_debug_screenshot
-from fc_utils.sellercloud import download_report, request_custom_export
-from fc_utils.ui_utils import ask_user
+from seller_automation_utils.database_utils import insert_dataframe, safe_execute
+from seller_automation_utils.ebay import customize_offers_table
+from seller_automation_utils.excel_utils import paste_image_to_sheet, refresh_workbook, run_macro
+from seller_automation_utils.greeting import greeting_for
+from seller_automation_utils.logging_utils import setup_logging
+from seller_automation_utils.outlook import get_account, get_verification_code, send_email
+from seller_automation_utils.schedule_utils import run_on_schedule
+from seller_automation_utils.screenshot_utils import crop_to_box, crop_to_element, paste_to_excel, save_debug_screenshot
+from seller_automation_utils.sellercloud import download_report, request_custom_export
+from seller_automation_utils.ui_utils import ask_user
 
 __all__ = [
     # accounts
