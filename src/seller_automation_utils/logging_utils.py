@@ -1,4 +1,4 @@
-"""Shared logging setup for fc-utils automations."""
+"""Shared logging setup for seller-automation-utils."""
 from __future__ import annotations
 
 import logging

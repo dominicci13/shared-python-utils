@@ -8,27 +8,33 @@ __pycache__/
 # Logs and outputs
 logs/
 output/
+downloaded_files/
 
-# Config (local secrets — keep only .example files)
+# Screenshots — ignore everything except .gitkeep so the folder is tracked
+screenshots/*
+!screenshots/.gitkeep
+
+# Local config / secrets
 config/*.json
+!config/*.json.example
 .env
-
-# Data files (Excel, CSV, etc.)
-*.xlsx
-*.xls
-*.xlsm
-*.csv
 
 # Build artifacts
 *.egg-info/
 dist/
 build/
 
-# Claude Code
-.claude/
+# Working artifacts
 tasks/
-ruvector.db
+.claude/
+CLAUDE.md
+*.db
+
+# Data files
+*.xlsx
+*.xls
+*.xlsm
+*.csv
 
 # OS junk
 .DS_Store
-Thumbs.db

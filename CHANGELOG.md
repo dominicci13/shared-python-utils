@@ -1,9 +1,23 @@
 # Changelog
 
+## 1.0.0 — 2026-05-22
+
+### Renamed
+- **Package renamed from `fc-utils` to `seller-automation-utils`** (and the Python import name from `fc_utils` to `seller_automation_utils`). The new name describes the package's purpose without any project-specific shorthand. Consumers must update their `requirements.txt` (`fc-utils @ git+...` → `seller-automation-utils @ git+...`) and any `from fc_utils.X import Y` statements to `from seller_automation_utils.X import Y`. No public API or behavior changes.
+
+### Added
+- `config/selectors.json.example` and `config/paths.json.example` — placeholder schemas for the SellerCloud DOM selectors and per-tenant URLs that `sellercloud.request_custom_export` / `download_report` read at runtime. Both real files remain gitignored.
+- `.env.example` — placeholder for `ALERT_EMAIL`, `SELLERCLOUD_DELTA_URL`, and `SELLERCLOUD_ALPHA_URL`, matching the `get_env(...)` reads in `alert_utils` and `accounts`.
+
+### Packaging
+- Bumped version to `1.0.0`
+
+---
+
 ## 0.7.3 — 2026-05-21
 
 ### Fixes
-- `database_utils.insert_dataframe` now opts out of pandas 3.x's StringDtype default via `pd.set_option("future.infer_string", False)`. Without this, `df.iterrows()` rebuilds each row as a Series that converts `None` back to `NaN`, which pyodbc cannot bind to nullable SQL columns — causing every insert against a DataFrame with `None` in string columns to fail. Discovered during Phase 3 live testing.
+- `database_utils.insert_dataframe` now opts out of pandas 3.x's StringDtype default via `pd.set_option("future.infer_string", False)`. Without this, `df.iterrows()` rebuilds each row as a Series that converts `None` back to `NaN`, which pyodbc cannot bind to nullable SQL columns — causing every insert against a DataFrame with `None` in string columns to fail. Discovered during live integration testing.
 
 ### Packaging
 - Bumped version to `0.7.3`
@@ -13,7 +27,7 @@
 ## 0.7.2 — 2026-05-20
 
 ### Behavior changes
-- `excel_utils.refresh_workbook` default `macro_name` changed from `"Module1.Refresh"` to `"modUtilities.refresh"`. Reflects the Phase 3 hardening convention — one Standard Module per workbook named `modUtilities` with a synchronous `refresh()` sub. Callers that still drive a legacy `Module1.Refresh` macro must now pass it explicitly.
+- `excel_utils.refresh_workbook` default `macro_name` changed from `"Module1.Refresh"` to `"modUtilities.refresh"`. Reflects the standardized workbook convention adopted across consumers — one Standard Module per workbook named `modUtilities` with a synchronous `refresh()` sub. Callers that still drive a legacy `Module1.Refresh` macro must now pass it explicitly.
 
 ### Packaging
 - Bumped version to `0.7.2`

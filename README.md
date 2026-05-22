@@ -1,4 +1,4 @@
-# fc-utils
+# seller-automation-utils
 
 Shared Python utilities for Amazon and eBay seller automation.
 
@@ -41,7 +41,7 @@ cp .env.example .env
 Account name maps and eBay Chrome profiles loaded from `config/accounts.json`. Amazon login via Outlook OTP.
 
 ```python
-from fc_utils import AMAZON_ACCOUNT_NAMES, EBAY_PROFILES, amazon_login
+from seller_automation_utils import AMAZON_ACCOUNT_NAMES, EBAY_PROFILES, amazon_login
 ```
 
 ### `alert_utils`
@@ -49,7 +49,7 @@ Capture browser screenshots and tab URLs on crash, send a crash report via Outlo
 
 ```python
 import traceback
-from fc_utils import handle_crash
+from seller_automation_utils import handle_crash
 
 try:
     run_automation()
@@ -61,7 +61,7 @@ except Exception:
 Start a Chrome browser with SeleniumBase, with retry on failure.
 
 ```python
-from fc_utils import start_browser
+from seller_automation_utils import start_browser
 
 driver = start_browser(user_data_dir="C:/chrome-profiles", chrome_profile="Default", retry_count=3)
 ```
@@ -70,7 +70,7 @@ driver = start_browser(user_data_dir="C:/chrome-profiles", chrome_profile="Defau
 Load JSON config files and read environment variables from `.env`.
 
 ```python
-from fc_utils import load_config, load_config_safe, get_env
+from seller_automation_utils import load_config, load_config_safe, get_env
 
 config = load_config_safe("config/settings.json")   # returns {} if file missing
 db_name = get_env("DB_NAME", required=True)
@@ -80,7 +80,7 @@ db_name = get_env("DB_NAME", required=True)
 General-purpose helpers: clipboard, shadow DOM, file scanning, SQL connection, process control.
 
 ```python
-from fc_utils import sql_connection, kill_app
+from seller_automation_utils import sql_connection, kill_app
 
 conn = sql_connection("MyDatabase")
 kill_app("chrome")
@@ -90,7 +90,7 @@ kill_app("chrome")
 Parameterized DataFrame inserts for SQL Server via pyodbc.
 
 ```python
-from fc_utils import insert_dataframe
+from seller_automation_utils import insert_dataframe
 
 insert_dataframe(cursor, "dbo.Orders", df, columns=["OrderId", "Status"])
 ```
@@ -99,7 +99,7 @@ insert_dataframe(cursor, "dbo.Orders", df, columns=["OrderId", "Status"])
 Customize the eBay Active Listings table columns in the seller dashboard.
 
 ```python
-from fc_utils import customize_offers_table
+from seller_automation_utils import customize_offers_table
 
 customize_offers_table(driver, sold=True, watchers=True)
 ```
@@ -108,7 +108,7 @@ customize_offers_table(driver, sold=True, watchers=True)
 Open Excel workbooks, run macros, refresh Power Query, and insert images.
 
 ```python
-from fc_utils import refresh_workbook, run_macro, paste_image_to_sheet
+from seller_automation_utils import refresh_workbook, run_macro, paste_image_to_sheet
 
 refresh_workbook("C:/reports/dashboard.xlsm", wait=30)
 run_macro("C:/reports/report.xlsm", "Module1.FormatSheet")
@@ -118,7 +118,7 @@ run_macro("C:/reports/report.xlsm", "Module1.FormatSheet")
 Directory creation, download polling, and directory cleanup.
 
 ```python
-from fc_utils import create_dir_structure, wait_for_download, clear_directory
+from seller_automation_utils import create_dir_structure, wait_for_download, clear_directory
 
 create_dir_structure("C:/automation", ["logs", "output/reports"])
 path = wait_for_download("C:/Downloads", extension=".csv", timeout_sec=120)
@@ -129,7 +129,7 @@ clear_directory("C:/Downloads", extension=".csv")
 Send emails from a configured Outlook account and poll for OTP/verification codes.
 
 ```python
-from fc_utils import send_email, get_verification_code
+from seller_automation_utils import send_email, get_verification_code
 
 send_email("sender@example.com", subject="Report", body="<p>Done</p>", to=["boss@example.com"])
 code = get_verification_code("me@example.com", sender_contains="amazon", subject_contains="OTP")
@@ -139,7 +139,7 @@ code = get_verification_code("me@example.com", sender_contains="amazon", subject
 Run a function on a recurring cron schedule using APScheduler.
 
 ```python
-from fc_utils import run_on_schedule
+from seller_automation_utils import run_on_schedule
 
 run_on_schedule(my_job, hour=8, minute=30, day_of_week="mon-fri")
 ```
@@ -148,7 +148,7 @@ run_on_schedule(my_job, hour=8, minute=30, day_of_week="mon-fri")
 Crop screenshots to Selenium elements or pixel boxes, and paste into Excel.
 
 ```python
-from fc_utils import crop_to_element, crop_to_box, paste_to_excel
+from seller_automation_utils import crop_to_element, crop_to_box, paste_to_excel
 
 path = crop_to_element(element)
 paste_to_excel("C:/reports/report.xlsm", sheet="Dashboard", cell="B5", image_path=path)
@@ -158,7 +158,7 @@ paste_to_excel("C:/reports/report.xlsm", sheet="Dashboard", cell="B5", image_pat
 Show a native Windows Yes/No dialog and return the user's choice.
 
 ```python
-from fc_utils import ask_user
+from seller_automation_utils import ask_user
 
 if ask_user("Continue with upload?", title="Confirm"):
     upload()

@@ -3,8 +3,8 @@ from __future__ import annotations
 import os
 import tempfile
 from datetime import datetime
-from fc_utils import outlook, custom_functions
-from fc_utils.config_utils import get_env
+from seller_automation_utils import outlook, custom_functions
+from seller_automation_utils.config_utils import get_env
 import logging
 
 log = logging.getLogger(__name__)

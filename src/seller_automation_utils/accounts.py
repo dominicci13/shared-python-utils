@@ -8,8 +8,8 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.support import expected_conditions as EC
-from fc_utils import outlook
-from fc_utils.config_utils import get_env, load_config_safe
+from seller_automation_utils import outlook
+from seller_automation_utils.config_utils import get_env, load_config_safe
 import logging
 
 log = logging.getLogger(__name__)

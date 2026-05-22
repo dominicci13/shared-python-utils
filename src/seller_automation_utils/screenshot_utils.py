@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PIL import Image, ImageGrab
-from fc_utils.excel_utils import paste_image_to_sheet
+from seller_automation_utils.excel_utils import paste_image_to_sheet
 import logging
 
 log = logging.getLogger(__name__)
@@ -27,7 +27,7 @@ def save_debug_screenshot(driver: object, root: str, section: str, description: 
     Args:
         driver (object): Active Selenium/SeleniumBase WebDriver instance.
         root (str): Top-level folder name. Use the per-account display name
-            for account-scoped flows (e.g. ``"SellerOrg"``), or a leading-
+            for account-scoped flows (e.g. ``"main_account"``), or a leading-
             underscore pseudo-root for non-account flows (e.g. ``"_sellercloud"``)
             so account folders sort cleanly together.
         section (str): Second-level folder name. Use the calling function's
