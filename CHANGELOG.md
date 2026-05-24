@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.1 — 2026-05-24
+
+### Quality
+- Added a `tests/` suite with unit coverage for the pure-function modules: `greeting.greeting_for`, `config_utils.get_env`, and `file_utils.create_dir_structure` / `file_utils.latest_modified_date`. Tests use `pytest` fixtures (`monkeypatch`, `tmp_path`) and run in <1 s.
+- Added a GitHub Actions workflow (`.github/workflows/install.yml`) that runs on every push and PR to `main`. Installs the package in editable mode with the new `[dev]` extra, smoke-imports it, and runs the test suite against Python 3.10 and 3.12 on `windows-latest`.
+- Added a `[project.optional-dependencies]` table to `pyproject.toml` with `dev = ["pytest>=8.0"]` so consumers can install testing tooling via `pip install -e ".[dev]"`.
+
+### Packaging
+- Bumped version to `1.0.1`
+
+---
+
 ## 1.0.0 — 2026-05-22
 
 ### Renamed
