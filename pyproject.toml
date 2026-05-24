@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "seller-automation-utils"
-version = "1.0.0"
+version = "1.0.1"
 description = "Shared Python utilities for Amazon and eBay seller automations"
 requires-python = ">=3.10"
 dependencies = [
@@ -18,6 +18,9 @@ dependencies = [
     "pillow>=10.0.0",
     "apscheduler>=3.10",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
