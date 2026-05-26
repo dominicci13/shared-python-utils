@@ -30,6 +30,16 @@ def run_on_schedule(
     latency. The scheduler's own daemon thread blocks efficiently until the
     next job fire time.
 
+    The job is added with ``misfire_grace_time=30``. APScheduler's default
+    grace is 1 second: if normal scheduler jitter delays the fire past that
+    1-second window (commonly ~1–2 seconds on Windows), the run is flagged
+    "missed" and silently skipped. A 30-second window absorbs that jitter so
+    scheduled runs actually execute, while still being short enough that a
+    badly delayed fire (e.g. recovery after a reboot) waits for its next
+    clean slot instead of colliding with other automations. ``coalesce=True``
+    keeps a recovered backlog to a single run rather than replaying each
+    missed fire.
+
     Args:
         func (Callable): The function to call on each scheduled trigger.
         hour (int): Hour of day to run (0–23, local time).
@@ -46,7 +56,9 @@ def run_on_schedule(
     if day_of_week is not None:
         cron_kwargs["day_of_week"] = day_of_week
 
-    job = scheduler.add_job(func, "cron", **cron_kwargs)
+    job = scheduler.add_job(
+        func, "cron", misfire_grace_time=30, coalesce=True, **cron_kwargs
+    )
     now = datetime.now(timezone.utc)
     next_run = job.trigger.get_next_fire_time(None, now)
     if next_run is not None:
