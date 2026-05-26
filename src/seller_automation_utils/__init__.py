@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.0.1"
+__version__ = "1.0.3"
 
 from seller_automation_utils.accounts import (
     AMAZON_ACCOUNT_NAMES,
