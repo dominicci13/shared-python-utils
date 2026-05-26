@@ -549,6 +549,7 @@ def download_report(
                 f"Waiting {poll_interval_sec}s before retrying."
             )
             time.sleep(poll_interval_sec)
+            driver.refresh()
 
     output = Path(output_path).resolve()
     extension = output.suffix or ".xlsx"
