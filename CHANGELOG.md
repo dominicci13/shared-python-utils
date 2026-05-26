@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.2 — 2026-05-25
+
+### Fixed
+- `sellercloud.download_report`: refresh the notify-download page after each wait interval in the report-ready poll loop. The loop previously re-checked the same stale page, so the download button never appeared once SellerCloud finished generating the report; the page is now reloaded so the button is detected on the next poll.
+
+### Packaging
+- Bumped version to `1.0.2`
+
+---
+
 ## 1.0.1 — 2026-05-24
 
 ### Quality
