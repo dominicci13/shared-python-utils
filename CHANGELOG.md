@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.3 — 2026-05-26
+
+### Fixed
+- `schedule_utils.run_on_schedule`: scheduled jobs were inheriting APScheduler's default `misfire_grace_time` of 1 second. Normal scheduler jitter on Windows (~1–2 s) routinely exceeded that window, so APScheduler flagged the run as "missed" and silently skipped it — the job never executed and only a `Run time of job … was missed by …` warning was logged. Jobs are now added with `misfire_grace_time=30` and explicit `coalesce=True`, so runs fire reliably while a badly delayed fire still defers to its next clean slot.
+
+### Packaging
+- Bumped version to `1.0.3`; re-synced `__version__` in `__init__.py` (was lagging at `1.0.1`).
+
+---
+
 ## 1.0.2 — 2026-05-25
 
 ### Fixed
