@@ -10,7 +10,7 @@ import logging
 log = logging.getLogger(__name__)
 
 ###############################################################################################################################################
-def customize_offers_table(driver: object, sold: bool = False, watchers: bool = False, views: bool = False) -> None:
+def customize_offers_table(driver: object, sold: bool = False, watchers: bool = False, views: bool = False, start_date: bool = False) -> None:
     """Customize the Active Listings table columns in the eBay seller dashboard.
 
     Clicks the 'Customize table' button, resets to defaults, then selects the
@@ -22,6 +22,7 @@ def customize_offers_table(driver: object, sold: bool = False, watchers: bool = 
         sold (bool, optional): Include the 'Sold Quantity' column. Defaults to False.
         watchers (bool, optional): Include the 'Watchers' column. Defaults to False.
         views (bool, optional): Include the 'Views (30 days)' column. Defaults to False.
+        start_date (bool, optional): Include the 'Start Date' column. Defaults to False.
     """
     log.info("Customizing the offers table.")
     customizing_table = True
@@ -91,6 +92,9 @@ def customize_offers_table(driver: object, sold: bool = False, watchers: bool = 
 
     if not watchers:
         driver.find_element(By.ID, "customize-watchCount").click()      # Watchers
+
+    if start_date:
+        driver.find_element(By.ID, "customize-scheduledStartDate").click()      # Start Date
 
     driver.find_element(By.ID, "customize-unansweredQuestionCount").click() # Questions
     driver.find_element(By.ID, "customize-bidCount").click()            # Bids
