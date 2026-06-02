@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.0 — 2026-06-01
+
+### New
+- `ebay.customize_offers_table()` — added `start_date: bool = False` parameter that toggles the eBay 'Start Date' column (`#customize-scheduledStartDate`) in the Active Listings table. Backward-compatible — existing callers default to the prior behavior. First consumer is `ebay-items-categories`, which now captures listing start timestamps into SQL `DATETIME2`.
+
+### Packaging
+- Bumped version to `1.1.0`
+
+---
+
 ## 1.0.3 — 2026-05-26
 
 ### Fixed
