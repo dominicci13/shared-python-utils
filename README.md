@@ -33,6 +33,14 @@ Sensitive values (email addresses, credentials) are loaded from a `.env` file vi
 cp .env.example .env
 ```
 
+### Environment Variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `ALERT_EMAIL` | Yes | Outlook account address used by `handle_crash` to send crash-report emails |
+| `SELLERCLOUD_DELTA_URL` | Yes | SellerCloud Delta tenant base URL (e.g. `https://your-tenant.delta.sellercloud.com`) |
+| `SELLERCLOUD_ALPHA_URL` | Yes | SellerCloud Alpha tenant base URL (e.g. `https://your-tenant.alpha.sellercloud.com`) |
+
 ---
 
 ## Module Index
