@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.1 — 2026-06-22
+
+### Fixed
+- `outlook.send_email` / `outlook.get_account`: `win32com.client.Dispatch("Outlook.Application")` raised `com_error -2147221008 'CoInitialize has not been called'` when invoked from an APScheduler worker thread. COM must be initialized per-thread, and the scheduler's worker thread never was — jobs that talk to Outlook from a non-main thread without first making an xlwings (Excel COM) call would fail at the email step, taking down the crash-alert path with them. Both functions now call a thread-local-guarded `_ensure_com()` (`pythoncom.CoInitialize()` once per thread, no `CoUninitialize` since returned Outlook objects must outlive the call) before any `Dispatch`.
+
+### Packaging
+- Bumped version to `1.1.1`
+
+---
+
 ## 1.1.0 — 2026-06-01
 
 ### New
