@@ -1,14 +1,36 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
 import traceback
 from typing import Callable
 
+import pythoncom
 import win32com.client
 import logging
 
 log = logging.getLogger(__name__)
+
+_com_ready = threading.local()
+
+
+def _ensure_com() -> None:
+    """Initialize COM on the current thread if it isn't already.
+
+    ``win32com.Dispatch`` requires ``CoInitialize`` on the calling thread.
+    Under APScheduler the job runs on a worker thread where COM is never set
+    up — unlike xlwings jobs, which initialize COM as a side effect of opening
+    Excel. Initialize once per thread and leave it up for the thread's life
+    (the returned Outlook objects must outlive this call, so we never
+    ``CoUninitialize``).
+    """
+    if getattr(_com_ready, "ready", False):
+        return
+    pythoncom.CoInitialize()
+    _com_ready.ready = True
+
+
 def get_account(account: str, folder: str) -> object:
     """Return the Outlook Items collection for a given account and folder.
 
@@ -22,6 +44,7 @@ def get_account(account: str, folder: str) -> object:
     Raises:
         ValueError: If the account or any folder in the path is not found.
     """
+    _ensure_com()
     outlook = win32com.client.Dispatch("Outlook.Application").GetNamespace("MAPI")
 
     for acc in outlook.Folders:
@@ -65,6 +88,7 @@ def send_email(
         Exception: Re-raises any COM or send failure after logging.
     """
     try:
+        _ensure_com()
         outlook = win32com.client.Dispatch("Outlook.Application")
         namespace = outlook.GetNamespace("MAPI")
 
