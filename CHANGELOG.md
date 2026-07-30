@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.1.2 — 2026-07-30
+
+### Fixed
+- `ebay.customize_offers_table`: a `StaleElementReferenceException` escaped the retry handler and killed the calling automation. When Seller Hub serves its own error state ("Something went wrong. Please try again."), `.customize-link` is present but not interactable, so the `ElementNotInteractableException` branch runs — but its best-effort probe for the discount dialog raised *stale* rather than timing out, because the page was re-rendering underneath it. The inner `except` caught only `TimeoutException`, so the stale error propagated out of the function and aborted the run (`ebay-items-categories`, 2026-07-30 12:23). The probe now swallows `StaleElementReferenceException`, `NoSuchElementException`, `ElementNotInteractableException` and `ElementClickInterceptedException` as well — the `driver.refresh()` is the real recovery path.
+
+### Changed
+- `ebay.customize_offers_table`: the retry is now bounded at 5 attempts and raises `RuntimeError` when exhausted. It was an unbounded `while`, so a sustained Seller Hub outage hung the job indefinitely instead of failing — meaning no crash alert ever fired and a scheduled run could sit wedged until killed by hand.
+
+### Tests
+- Added `tests/test_ebay_customize.py` (11 cases): healthy path, scroll-before-click, recovery after not-interactable, the bounded give-up, both intercepted-click dialog branches, and a parametrized case asserting no probe exception escapes.
+
+### Packaging
+- Bumped version to `1.1.2`
+
+---
+
 ## 1.1.1 — 2026-06-22
 
 ### Fixed

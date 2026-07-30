@@ -4,7 +4,7 @@ import time
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementClickInterceptedException, ElementNotInteractableException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementClickInterceptedException, ElementNotInteractableException, StaleElementReferenceException
 import logging
 
 log = logging.getLogger(__name__)
@@ -25,8 +25,7 @@ def customize_offers_table(driver: object, sold: bool = False, watchers: bool = 
         start_date (bool, optional): Include the 'Start Date' column. Defaults to False.
     """
     log.info("Customizing the offers table.")
-    customizing_table = True
-    while customizing_table:
+    for attempt in range(1, 6):
         try:
             customize_tbl = WebDriverWait(driver, 15).until(EC.presence_of_element_located((
                 By.CSS_SELECTOR,
@@ -35,17 +34,24 @@ def customize_offers_table(driver: object, sold: bool = False, watchers: bool = 
 
             driver.execute_script("arguments[0].scrollIntoView(true);", customize_tbl)
             customize_tbl.click()
-            customizing_table = False
+            break
 
         except (TimeoutException, ElementNotInteractableException):
+            # Best-effort dialog close. When Seller Hub errors ("Something went
+            # wrong"), the link exists but isn't interactable and the page is
+            # re-rendering underneath, so this probe can raise stale/not-found
+            # instead of timing out. Swallow all of it — the refresh is the
+            # actual recovery, and letting it escape kills the whole run.
             try:
                 WebDriverWait(driver, 5).until(EC.element_to_be_clickable((
                     By.CSS_SELECTOR,
                     "#sh-page > div.card-old > div > div.overlays > div.sme-discount-layer > span > div > div.lightbox-dialog__window.lightbox-dialog__window--animate.keyboard-trap--active > div.lightbox-dialog__header > button"
                 ))).click()
-            except TimeoutException:
+            except (TimeoutException, StaleElementReferenceException, NoSuchElementException,
+                    ElementNotInteractableException, ElementClickInterceptedException):
                 pass
 
+            log.warning(f"Customize-table link not ready (attempt #{attempt}). Refreshing.")
             driver.refresh()
 
         except ElementClickInterceptedException:
@@ -62,6 +68,11 @@ def customize_offers_table(driver: object, sold: bool = False, watchers: bool = 
             else:
                 driver.refresh()
                 time.sleep(5)
+
+    else:
+        # Previously an unbounded while-loop: a persistent Seller Hub outage hung
+        # the job forever instead of failing, so no crash alert ever fired.
+        raise RuntimeError("Customize-table link never became clickable after 5 attempts.")
 
     log.info("Restoring table to default columns.")
     WebDriverWait(driver, 10).until(EC.element_to_be_clickable((
