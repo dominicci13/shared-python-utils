@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-__version__ = "1.1.1"
+# Read from installed package metadata rather than hardcoded: this constant has
+# silently lagged the real version twice (stuck at 1.0.1 through 1.0.3, then at
+# 1.1.1 through 1.1.2 and 1.2.0), which makes fleet-wide version audits lie.
+try:
+    from importlib.metadata import PackageNotFoundError, version as _version
+
+    __version__ = _version("seller-automation-utils")
+except PackageNotFoundError:  # running from a source tree, never installed
+    __version__ = "0.0.0+unknown"
 
 from seller_automation_utils.accounts import (
     AMAZON_ACCOUNT_NAMES,
