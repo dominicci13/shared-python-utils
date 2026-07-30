@@ -45,7 +45,7 @@ from seller_automation_utils import AMAZON_ACCOUNT_NAMES, EBAY_PROFILES, amazon_
 ```
 
 ### `alert_utils`
-Capture browser screenshots and tab URLs on crash, send a crash report via Outlook, and clean up automation processes.
+Capture browser screenshots, the live DOM (main document plus every iframe), and tab URLs on crash, send a crash report via Outlook, and clean up automation processes.
 
 ```python
 import traceback

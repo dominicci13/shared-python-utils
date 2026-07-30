@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.2.0 — 2026-07-30
+
+### Added
+- `alert_utils.handle_crash`: crash emails now carry the live DOM as a `<automation>_crash_dom.txt` attachment alongside the screenshot, deleted after send like the screenshot is. Prompted by the `amzn-account-health` outage the same day: Amazon moved the Program Eligibilities metric cards into iframes, and the screenshot proved only *that* the page had changed, not *what the new selectors were* — diagnosing it cost a login and several rounds of live DOM inspection.
+- `alert_utils._collect_dom`: walks the frame tree rather than calling `driver.page_source` once. This is the whole point — `page_source` returns only the top-level document, and on that exact page it captures 157k chars of shell and **none** of the three widget iframes holding the real content, reproducing the very blind spot the attachment exists to remove. Measured on the live page: `page_source` 156,959 chars with zero hits for "Premium Shipping" / "Seller Fulfilled" / "program-card--PSO"; the frame walk 559,113 chars with all of them.
+
+### Notes
+- Capture never breaks the alert. A dead session, an unreadable frame, or a frame that cannot be entered is noted inline and skipped; if not one document is readable the attachment is dropped entirely rather than shipping a file of error markers next to the traceback already in the email body.
+- The DOM is captured **before** the open-tab sweep, since that loop leaves the driver on the last window handle rather than the one that crashed.
+- Bounded by `MAX_DOM_CHARS` (8M) and `MAX_FRAME_DEPTH` (3), so a runaway page cannot produce an unsendable attachment. Truncation is stated in the file.
+- The driver is returned to the top-level document afterwards, leaving the existing tab sweep unaffected.
+
+### Tests
+- Added `tests/test_alert_utils_dom.py` (12 cases) driven by a fake WebDriver: frame descent, nesting, depth cap, size cap, unreadable frame, un-enterable frame, restoration to default content, file header, and a dead-session driver.
+
+### Packaging
+- Bumped version to `1.2.0`
+
+---
+
 ## 1.1.2 — 2026-07-30
 
 ### Fixed
