@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.1 — 2026-07-30
+
+### Fixed
+- `__init__.__version__` is now read from installed package metadata (`importlib.metadata.version`) instead of being hardcoded. The constant had silently lagged the real version twice — stuck at `1.0.1` through the `1.0.3` release, then at `1.1.1` through both `1.1.2` and `1.2.0`. Anything auditing the fleet by importing the package and reading `__version__` got a wrong answer: during the 1.2.0 rollout it reported every repo as failing to upgrade when all 19 had in fact installed correctly. Falls back to `0.0.0+unknown` when imported from a source tree that was never installed.
+
+### Packaging
+- Bumped version to `1.2.1`
+
+---
+
 ## 1.2.0 — 2026-07-30
 
 ### Added
