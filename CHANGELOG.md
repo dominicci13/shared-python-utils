@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.3.0 — 2026-07-30
+
+### Changed
+- **`custom_functions.sql_connection`: driver `{SQL Server}` (legacy) → `{ODBC Driver 17 for SQL Server}`, plus `Trusted_Connection=yes`.** `fast_executemany` only accelerates on the Driver 11/17/18 family, so this is a prerequisite for the insert change below. **This affects reads as well as writes** — date, decimal and unicode binding differ between the legacy driver and Driver 17, for every query in every repo that calls `sql_connection`.
+- **`database_utils.insert_dataframe`: per-row `execute` loop → a single `fast_executemany` `executemany`.** Measured on real AllItems data: ~600 rows/s → **14,117 rows/s (~23×)**.
+  - New `_input_sizes()` pins each column's bind width from the live table schema (`cursor.columns()`). **Required, not an optimization**: `fast_executemany` otherwise sizes string parameters from the *first* row, so a longer later value raises `String data, right truncation`. It also pins `date`/`datetime` columns as WVARCHAR, because callers bind those as strings and the driver otherwise raises `Invalid character value for cast specification`.
+  - The bulk insert runs on a **dedicated cursor on the caller's connection**, so `fast_executemany`/`setinputsizes` never leak onto the caller's cursor, while a preceding uncommitted `DELETE` stays in the same transaction — atomic delete-then-insert is preserved.
+  - On driver error: rollback, then replay row-by-row on a clean cursor. A genuinely bad row is named in the `RuntimeError` for the crash email and re-raised; otherwise the row-by-row inserts are committed, since the fast path merely could not bulk-bind those types.
+
+### Tests
+- Added `tests/test_database_input_sizes.py` (28 cases) covering every `_input_sizes` branch against a fake cursor: all six string type codes, the 4000-char boundary, `>4000`/`0`/`None`/negative widths collapsing to `(n)varchar(max)`, decimal precision and scale, decimal defaults, all six date/time type names case-insensitively, unknown columns, non-pinned types, positional alignment to the requested column order, and the table actually introspected. A wrong width here corrupts data silently, which is why it is unit-tested rather than left to per-repo checks.
+
+### Upgrade notes
+- Requires **ODBC Driver 17 for SQL Server** on the machine running the automation. Check with `python -c "import pyodbc; print(pyodbc.drivers())"`.
+- Rollback: `pip install seller-automation-utils==1.2.1` in the affected repo.
+- Repos calling `insert_dataframe` or `sql_connection` (9): `amzn-catalog-health`, `amzn-ca-fba-inventory`, `amzn-feedback-manager`, `amzn-prime-orders`, `amzn-top-sales`, `ebay-avg-sold-price`, `ebay-best-offers`, `ebay-items-categories`, `sellercloud-sync`.
+- `pricing-monitor` keeps its own copy of `sql_connection` (`src/catalog.py`) and is unaffected, but now diverges from the fleet on the driver.
+
+---
+
 ## 1.2.1 — 2026-07-30
 
 ### Fixed
