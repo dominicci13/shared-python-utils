@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.3.1 — 2026-07-30
+
+### Fixed
+- **`_input_sizes` no longer breaks callers that pass real date objects.** 1.3.0 pinned every temporal column to `WVARCHAR(40)` purely from the table schema, on the assumption that callers stringify dates. Some do — `amzn-ca-fba-inventory` deliberately sends `date.isoformat()` because the legacy driver could not bind `datetime.date` — but others do not: `sellercloud-sync` builds `LastReceived` with `pd.to_datetime(...)` and hands over `pandas.Timestamp` objects. Pinning those WVARCHAR made the insert fail, a regression against the old per-row path where pyodbc bound them natively. The decision is now made from the data: a temporal column is pinned WVARCHAR only when its first non-null value is a `str`, and is otherwise left to pyodbc. Leading nulls are skipped when sniffing; an all-null column, or a call with no DataFrame, is left native.
+- Caught by the per-repo verification gate before any scheduled run hit it. `sellercloud-sync` would have failed on its next run under 1.3.0.
+
+### Tests
+- Extended `tests/test_database_input_sizes.py` to 35 cases: strings still pinned, `datetime.date` / `datetime.datetime` / `pandas.Timestamp` left native, leading nulls skipped, all-null left native, no-DataFrame left native, and string/decimal pinning proven independent of the data.
+
+### Packaging
+- Bumped version to `1.3.1`. **Anyone on 1.3.0 should move to 1.3.1** — 1.3.0 is only safe for callers that stringify every date.
+
+---
+
 ## 1.3.0 — 2026-07-30
 
 ### Changed

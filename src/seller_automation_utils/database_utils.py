@@ -18,7 +18,29 @@ _DECIMAL_TYPES = frozenset({pyodbc.SQL_DECIMAL, pyodbc.SQL_NUMERIC})
 _DATETIME_NAMES = frozenset({"date", "datetime", "datetime2", "smalldatetime", "time", "datetimeoffset"})
 
 
-def _input_sizes(cursor: pyodbc.Cursor, table_name: str, columns: list[str]) -> list:
+def _binds_as_text(values) -> bool:
+    """Whether a column's first non-null value is a string.
+
+    Temporal columns are only pinned WVARCHAR when the caller is actually passing
+    text. Callers differ: some stringify dates (``date.isoformat()``), others hand
+    over real ``datetime.date`` / ``pandas.Timestamp`` objects, and those must be
+    left for pyodbc to bind natively.
+    """
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, float) and value != value:  # NaN
+            continue
+        return isinstance(value, str)
+    return False
+
+
+def _input_sizes(
+    cursor: pyodbc.Cursor,
+    table_name: str,
+    columns: list[str],
+    df: pd.DataFrame | None = None,
+) -> list:
     """Build a ``setinputsizes`` entry per column from the live table schema.
 
     fast_executemany otherwise sizes each string parameter from the FIRST row,
@@ -30,6 +52,9 @@ def _input_sizes(cursor: pyodbc.Cursor, table_name: str, columns: list[str]) -> 
         cursor (pyodbc.Cursor): Active cursor on the destination database.
         table_name (str): Destination table whose columns are introspected.
         columns (list[str]): Ordered column names being inserted.
+        df (pd.DataFrame | None): Rows about to be inserted. Used only to decide
+            whether a temporal column is being fed strings or real date objects;
+            without it, temporal columns are left to pyodbc.
 
     Returns:
         list: Values aligned to ``columns`` for ``cursor.setinputsizes``.
@@ -46,7 +71,10 @@ def _input_sizes(cursor: pyodbc.Cursor, table_name: str, columns: list[str]) -> 
         elif m.data_type in _DECIMAL_TYPES:
             sizes.append((pyodbc.SQL_DECIMAL, m.column_size or 18, m.decimal_digits or 0))
         elif (m.type_name or "").lower() in _DATETIME_NAMES:
-            sizes.append((pyodbc.SQL_WVARCHAR, 40, 0))
+            # Pinning WVARCHAR is what lets a "YYYY-MM-DD" string reach a date
+            # column, but it breaks a real date object, so decide from the data.
+            stringy = df is not None and col in df.columns and _binds_as_text(df[col])
+            sizes.append((pyodbc.SQL_WVARCHAR, 40, 0) if stringy else None)
         else:
             sizes.append(None)
     return sizes
@@ -89,7 +117,7 @@ def insert_dataframe(cursor: pyodbc.Cursor, table_name: str, df: pd.DataFrame, c
     # same transaction — atomic delete-then-insert is preserved.
     ins = cursor.connection.cursor()
     try:
-        ins.setinputsizes(_input_sizes(ins, table_name, columns))
+        ins.setinputsizes(_input_sizes(ins, table_name, columns, df))
         ins.fast_executemany = True
         ins.executemany(query, rows)
         ins.connection.commit()
