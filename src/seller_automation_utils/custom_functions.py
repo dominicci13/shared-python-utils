@@ -180,9 +180,10 @@ def sql_connection(database: str) -> object:
     """
     log.info(f"Connecting to SQL database: [cyan]{database}[/cyan].")
     conn = pyodbc.connect(
-        "DRIVER={SQL Server};"
+        "DRIVER={ODBC Driver 17 for SQL Server};"
         r"SERVER=localhost\SQLEXPRESS;"
         f"DATABASE={database};"
+        "Trusted_Connection=yes;"
     )
     log.success(f"Connected to [cyan]{database}[/cyan] successfully.")
     return conn

@@ -87,7 +87,10 @@ kill_app("chrome")
 ```
 
 ### `database_utils`
-Parameterized DataFrame inserts for SQL Server via pyodbc.
+Bulk DataFrame inserts for SQL Server via pyodbc `fast_executemany` (~23× the old
+per-row loop). Bind widths are pinned from the live table schema, so long strings
+do not truncate; a driver error rolls back and replays row-by-row to name the
+offending row. Requires the **ODBC Driver 17** connection from `sql_connection`.
 
 ```python
 from seller_automation_utils import insert_dataframe
