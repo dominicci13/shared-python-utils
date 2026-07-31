@@ -7,6 +7,9 @@ branch is covered against a fake cursor rather than a live database.
 """
 from __future__ import annotations
 
+from datetime import date, datetime
+
+import pandas as pd
 import pyodbc
 import pytest
 
@@ -92,10 +95,57 @@ def test_decimal_without_metadata_defaults():
     ["date", "datetime", "datetime2", "smalldatetime", "time", "datetimeoffset",
      "DATE", "DateTime2"],
 )
-def test_datetime_columns_bound_as_wvarchar(type_name):
-    """Callers bind dates as strings; without this the driver cannot cast them."""
-    got = sizes_for([FakeColumn("Date", pyodbc.SQL_TYPE_TIMESTAMP, type_name=type_name)])
-    assert got == [(pyodbc.SQL_WVARCHAR, 40, 0)]
+def test_datetime_pinned_wvarchar_when_values_are_strings(type_name):
+    """A "YYYY-MM-DD" string only reaches a date column if pinned WVARCHAR."""
+    cols = [FakeColumn("Date", pyodbc.SQL_TYPE_TIMESTAMP, type_name=type_name)]
+    df = pd.DataFrame({"Date": ["2026-07-30", "2026-07-31"]})
+    assert _input_sizes(FakeCursor(cols), "T", ["Date"], df) == [(pyodbc.SQL_WVARCHAR, 40, 0)]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [date(2026, 7, 30), datetime(2026, 7, 30, 12, 0), pd.Timestamp("2026-07-30 12:00")],
+)
+def test_datetime_left_native_when_values_are_objects(value):
+    """Regression: pinning WVARCHAR breaks real date objects.
+
+    sellercloud-sync builds `LastReceived` with `pd.to_datetime(...)`, so it hands
+    over Timestamps; 1.3.0 pinned that column WVARCHAR and the insert failed.
+    """
+    cols = [FakeColumn("LastReceived", pyodbc.SQL_TYPE_TIMESTAMP, type_name="datetime")]
+    df = pd.DataFrame({"LastReceived": [value]})
+    assert _input_sizes(FakeCursor(cols), "T", ["LastReceived"], df) == [None]
+
+
+def test_datetime_ignores_leading_nulls_when_sniffing():
+    cols = [FakeColumn("Date", pyodbc.SQL_TYPE_TIMESTAMP, type_name="date")]
+    df = pd.DataFrame({"Date": [None, None, "2026-07-30"]})
+    assert _input_sizes(FakeCursor(cols), "T", ["Date"], df) == [(pyodbc.SQL_WVARCHAR, 40, 0)]
+
+
+def test_datetime_all_null_column_left_native():
+    cols = [FakeColumn("Date", pyodbc.SQL_TYPE_TIMESTAMP, type_name="date")]
+    df = pd.DataFrame({"Date": [None, None]})
+    assert _input_sizes(FakeCursor(cols), "T", ["Date"], df) == [None]
+
+
+def test_datetime_left_native_without_a_dataframe():
+    """No data to sniff means no assumption about how the caller binds."""
+    got = sizes_for([FakeColumn("Date", pyodbc.SQL_TYPE_TIMESTAMP, type_name="date")])
+    assert got == [None]
+
+
+def test_string_and_decimal_pinning_is_unaffected_by_data():
+    """Only temporal columns consult the data; the rest stay schema-driven."""
+    cols = [
+        FakeColumn("SKU", pyodbc.SQL_VARCHAR, column_size=64),
+        FakeColumn("Price", pyodbc.SQL_DECIMAL, column_size=19, decimal_digits=4),
+    ]
+    df = pd.DataFrame({"SKU": [None], "Price": [None]})
+    assert _input_sizes(FakeCursor(cols), "T", ["SKU", "Price"], df) == [
+        (pyodbc.SQL_WVARCHAR, 64, 0),
+        (pyodbc.SQL_DECIMAL, 19, 4),
+    ]
 
 
 def test_unknown_column_gets_none():
