@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.4.0 — 2026-07-31
+
+### Added
+- **`fleet_state.py` — durable on-disk heartbeat and crash archive.** Until now nothing outside an automation's own process could tell whether it was healthy. The only failure signal was the `[CRASH]` email from `handle_crash`, which requires the automation to catch its own exception *and* still be able to drive Outlook COM. A killed process, a logged-off Windows session, a scheduler thread that quietly stopped firing, or a broken Outlook all failed **silently**. Two automations were found down for weeks with no signal at all.
+  - `HeartbeatWriter` writes `%LOCALAPPDATA%\fc-fleet\heartbeats\<name>.json` every 15s (atomic temp-file + `os.replace`, with a short retry because Windows fails the replace if a reader or AV has the target open).
+  - Each beat carries every job's **live** `next_run_time`, re-read from `scheduler.get_jobs()` and never cached. If the scheduler's background thread dies inside a still-running process, the jobs stay listed but their next-run times stop advancing — the only externally visible symptom of that failure, and the reason caching would defeat the purpose.
+  - `automation_name()` derives the key from `sys.argv[0]` (`run_<module>.py` → `<module>`), so **no repo needed a source edit**. It is deliberately not derived from the display name passed to `handle_crash`: those are human labels (`"Amazon CA FBA Inventory"` for `amzn_ca_fba_inventory`) and are sometimes built at runtime (`"eBay Best Offers (failed on X)"`).
+  - Nothing in the module raises. A monitoring side-channel that can kill the automation it monitors is worse than no monitoring, so every function swallows its own errors and reports success as a bool.
+
+### Changed
+- **`schedule_utils.run_on_schedule` emits the heartbeat**, records each job outcome from its existing `EVENT_JOB_EXECUTED | EVENT_JOB_ERROR` listener, and clears the heartbeat file on clean shutdown — so a deliberate Ctrl+C is distinguishable from a kill, which leaves the file behind to age into staleness.
+- **`alert_utils.handle_crash` archives the crash before attempting the email.** Everything after that point depends on Outlook COM, and a broken Outlook must not also erase the evidence of the crash. The screenshot and DOM capture are now **moved into the archive rather than deleted**, so they stop existing only as mail attachments; the email attaches them from their new location. A failing `send_email` is caught and logged instead of aborting the handler, so the Excel/Chrome/ChromeDriver cleanup still runs. `emailed` is stamped on the record, which distinguishes "crashed and you were told" from "crashed and the alert itself failed".
+- **`ui_utils.ask_user` honors `FC_NO_PROMPT`.** Every entry point in the fleet blocks on this dialog before reaching its scheduler; an automation started unattended would otherwise hang forever on a message box nobody is looking at while appearing to run. Returns False when set, which for the fleet's `if ask_user(...): main()` shape means "skip the immediate run, go straight to the scheduler".
+
+### Fixed
+- **`apscheduler` capped to `>=3.10,<4`.** The previous `>=3.10` permitted APScheduler 4, which drops the 3.x scheduler API this package is built on (`get_jobs()`/`next_run_time`, the `add_listener` event constants). A routine `pip install -U` would have broken all 18 automations at once.
+
+### Tests
+- Added `tests/test_fleet_state.py` (24 cases) and `tests/test_ui_utils.py` (5 cases). Covers name derivation across the fleet's path shapes, heartbeat round-trip, corrupt/missing files, rate limiting, crash archive artifact moves, `emailed` stamping, retention pruning, and multi-job snapshots (`inventory-feed-report` runs two jobs in one process). Includes a regression test for a bug found during development: `record_result` forced a write with an empty job list *and* reset the rate limiter, blanking next-run times for a full interval — precisely the signature a monitor reads as a dead scheduler.
+- Full suite: 110 passing.
+
+### Upgrade notes
+- Purely additive; no caller changes required. Repos pick it up with `pip install -U seller-automation-utils`.
+- `inventory-feed-report` shadows the shared helper with its own two-job `run_on_schedule`, so it was wired up by hand in that repo.
+- **Verified end-to-end**, not just unit-tested: a real scheduler process writes a correct heartbeat, and killing it leaves the file behind as intended.
+
+---
+
 ## 1.3.1 — 2026-07-30
 
 ### Fixed

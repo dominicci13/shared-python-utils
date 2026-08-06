@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 from datetime import datetime
-from seller_automation_utils import outlook, custom_functions
+from seller_automation_utils import fleet_state, outlook, custom_functions
 from seller_automation_utils.config_utils import get_env
 import logging
 
@@ -153,12 +153,19 @@ def _write_dom_file(driver: object, automation_name: str, timestamp: str) -> str
 
 
 def handle_crash(driver: object | None, error_traceback: str, automation_name: str) -> None:
-    """Handle a script crash: capture browser state, send an alert email, and clean up processes.
+    """Handle a script crash: capture browser state, archive it, alert, and clean up.
 
     Takes a screenshot of the current browser window, saves the live DOM (main
-    document plus every iframe) to a text file, collects all open tab URLs, sends a
-    detailed crash report via Outlook, deletes both temporary files, then forcefully
-    kills Excel, Chrome, and ChromeDriver processes.
+    document plus every iframe) to a text file, collects all open tab URLs,
+    **archives all of it to disk**, sends a detailed crash report via Outlook,
+    then forcefully kills Excel, Chrome, and ChromeDriver processes.
+
+    The archive is written *before* the email is attempted, and the screenshot
+    and DOM are moved into it rather than deleted. The email goes out over
+    Outlook COM, so a broken Outlook used to lose the traceback outright — the
+    one failure that most needs reporting. The artifacts also used to survive
+    only as mail attachments, which put them out of reach of the
+    ``fleet-control`` dashboard and of any later debugging session.
 
     If the driver was never initialized (e.g., Chrome failed to launch), the
     function skips the screenshot, DOM capture, and tab collection, and sends the
@@ -202,6 +209,19 @@ def handle_crash(driver: object | None, error_traceback: str, automation_name: s
         except Exception:
             tab_info = "Could not retrieve tab information."
 
+    # Archive before emailing. Everything below this point depends on Outlook
+    # COM, and a broken Outlook must not also erase the evidence of the crash.
+    crash_dir = fleet_state.record_crash(
+        fleet_state.automation_name(),
+        traceback_text=error_traceback,
+        display_name=automation_name,
+        tabs=tab_info,
+        screenshot_path=screenshot_path,
+        dom_path=dom_path,
+    )
+    if crash_dir is not None:
+        log.info(f"Crash archived to [cyan]{crash_dir}[/cyan].")
+
     body = f"""
     <b>Automation:</b> {automation_name}<br>
     <b>Timestamp:</b> {timestamp}<br><br>
@@ -212,27 +232,32 @@ def handle_crash(driver: object | None, error_traceback: str, automation_name: s
     """
 
     log.info(f"Sending crash report for [cyan]{automation_name}[/cyan].")
-    attachments = [path for path in (screenshot_path, dom_path) if path]
-    outlook.send_email(
-        account=alert_email,
-        subject=f"[CRASH] {automation_name} — {timestamp}",
-        body=body,
-        to=[alert_email],
-        attachments=attachments,
-        show=False,
-        send=True,
-    )
-
-    for path, label in ((screenshot_path, "screenshot"), (dom_path, "DOM file")):
-        if path and os.path.exists(path):
-            try:
-                os.remove(path)
-                log.info(f"Temporary {label} deleted.")
-            except OSError:
-                log.warning(f"Could not delete temporary {label}: {path}")
+    # Attach from the archive, not the temp paths — record_crash moved them.
+    attachments = [
+        str(crash_dir / filename)
+        for filename in ("screenshot.png", "dom.txt")
+        if crash_dir is not None and (crash_dir / filename).exists()
+    ]
+    try:
+        outlook.send_email(
+            account=alert_email,
+            subject=f"[CRASH] {automation_name} — {timestamp}",
+            body=body,
+            to=[alert_email],
+            attachments=attachments,
+            show=False,
+            send=True,
+        )
+        fleet_state.mark_crash_emailed(crash_dir)
+        log.success("Crash report sent.")
+    except Exception:
+        # Never let the alert channel be the thing that kills the crash handler:
+        # the archive already holds everything, and the cleanup below still
+        # needs to run.
+        log.error("Crash email failed — the crash is archived on disk regardless.")
 
     log.info("Killing automation processes.")
     for process in ["excel", "chrome", "chromedriver"]:
         custom_functions.kill_app(process)
 
-    log.success("Crash report sent and processes cleaned up.")
+    log.success("Crash handling complete.")
