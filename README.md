@@ -45,7 +45,7 @@ from seller_automation_utils import AMAZON_ACCOUNT_NAMES, EBAY_PROFILES, amazon_
 ```
 
 ### `alert_utils`
-Capture browser screenshots, the live DOM (main document plus every iframe), and tab URLs on crash, send a crash report via Outlook, and clean up automation processes.
+Capture browser screenshots, the live DOM (main document plus every iframe), and tab URLs on crash, archive all of it to disk, send a crash report via Outlook, and clean up automation processes. The archive is written *before* the email is attempted, so a broken Outlook no longer loses the traceback.
 
 ```python
 import traceback
@@ -128,6 +128,18 @@ path = wait_for_download("C:/Downloads", extension=".csv", timeout_sec=120)
 clear_directory("C:/Downloads", extension=".csv")
 ```
 
+### `fleet_state`
+Durable on-disk heartbeat and crash archive under `%LOCALAPPDATA%\fc-fleet`, read by the `fleet-control` dashboard. `run_on_schedule` wires this up automatically — you only touch it directly to read state back.
+
+```python
+from seller_automation_utils import read_heartbeat
+
+beat = read_heartbeat("ebay_best_offers")
+print(beat["jobs"], beat["last_result"])
+```
+
+Each beat carries every job's live `next_run_time`, so a scheduler thread that died inside a still-running process is externally visible — the one failure `handle_crash` can never report.
+
 ### `outlook`
 Send emails from a configured Outlook account and poll for OTP/verification codes.
 
@@ -139,13 +151,15 @@ code = get_verification_code("me@example.com", sender_contains="amazon", subject
 ```
 
 ### `schedule_utils`
-Run a function on a recurring cron schedule using APScheduler.
+Run a function on a recurring cron schedule using APScheduler, emitting a `fleet_state` heartbeat on every tick.
 
 ```python
 from seller_automation_utils import run_on_schedule
 
 run_on_schedule(my_job, hour=8, minute=30, day_of_week="mon-fri")
 ```
+
+Requires APScheduler 3.x — 4.x drops the scheduler API this is built on and is capped out in `pyproject.toml`.
 
 ### `screenshot_utils`
 Crop screenshots to Selenium elements or pixel boxes, and paste into Excel.
@@ -166,6 +180,8 @@ from seller_automation_utils import ask_user
 if ask_user("Continue with upload?", title="Confirm"):
     upload()
 ```
+
+Set `FC_NO_PROMPT=1` to skip the dialog and return False — required for unattended starts, which would otherwise block forever on a message box nobody is looking at.
 
 ---
 

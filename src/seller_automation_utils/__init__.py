@@ -34,6 +34,13 @@ from seller_automation_utils.custom_functions import (
 from seller_automation_utils.database_utils import insert_dataframe, safe_execute
 from seller_automation_utils.ebay import customize_offers_table
 from seller_automation_utils.excel_utils import paste_image_to_sheet, refresh_workbook, run_macro
+from seller_automation_utils.fleet_state import (
+    HeartbeatWriter,
+    automation_name,
+    read_heartbeat,
+    record_crash,
+    snapshot_jobs,
+)
 from seller_automation_utils.greeting import greeting_for
 from seller_automation_utils.logging_utils import setup_logging
 from seller_automation_utils.outlook import get_account, get_verification_code, send_email
@@ -78,6 +85,12 @@ __all__ = [
     "paste_image_to_sheet",
     "refresh_workbook",
     "run_macro",
+    # fleet_state
+    "HeartbeatWriter",
+    "automation_name",
+    "read_heartbeat",
+    "record_crash",
+    "snapshot_jobs",
     # greeting
     "greeting_for",
     # logging_utils

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "seller-automation-utils"
-version = "1.3.1"
+version = "1.4.0"
 description = "Shared Python utilities for Amazon and eBay seller automations"
 requires-python = ">=3.10"
 dependencies = [
@@ -16,7 +16,10 @@ dependencies = [
     "pyodbc>=5.0.0",
     "pywin32>=306",
     "pillow>=10.0.0",
-    "apscheduler>=3.10",
+    # Capped below 4.0: APScheduler 4 drops the 3.x scheduler API this package
+    # is built on (get_jobs()/next_run_time, add_listener event constants), so
+    # an unpinned upgrade would break every automation in the fleet at once.
+    "apscheduler>=3.10,<4",
 ]
 
 [project.optional-dependencies]
