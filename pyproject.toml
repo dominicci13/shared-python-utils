@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "seller-automation-utils"
-version = "1.4.2"
+version = "1.5.0"
 description = "Shared Python utilities for Amazon and eBay seller automations"
 requires-python = ">=3.10"
 dependencies = [
