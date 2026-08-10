@@ -6,7 +6,7 @@ from pathlib import Path
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 from selenium.webdriver.support import expected_conditions as EC
 from seller_automation_utils import outlook
 from seller_automation_utils.config_utils import get_env, load_config_safe
@@ -181,27 +181,115 @@ def amazon_login(
 
     return None
 
-##################################################################################################################################################
-def ebay(password: str, driver: object) -> None:
-    """Log in to an eBay seller account.
+EBAY_CAPTCHA_MARKER = "/splashui/captcha"
+EBAY_SIGNIN_MARKER = "signin.ebay.com"
 
-    Waits for the password field to be present (up to 15 s), clears it,
-    enters the password, and submits the form.
+# eBay's step-1 username field. The id has been `userid` for years, but the
+# two-step flow could not be captured live (every automated hit on the sign-in
+# page currently lands on a captcha), so this is a best-known list rather than a
+# verified selector — hence the fall-through and the explicit error below.
+_USERNAME_LOCATORS = (
+    (By.ID, "userid"),
+    (By.CSS_SELECTOR, "input[name='userid']"),
+    (By.CSS_SELECTOR, "input[autocomplete='username']"),
+)
+
+
+def _visible_username_field(driver: object) -> object | None:
+    """Return eBay's step-1 username input if one is on screen.
+
+    Returns:
+        object | None: The first displayed username input, or None when the page
+            is not showing the username step.
+    """
+    for by, selector in _USERNAME_LOCATORS:
+        for element in driver.find_elements(by, selector):
+            try:
+                if element.is_displayed():
+                    return element
+            except StaleElementReferenceException:
+                continue
+    return None
+
+
+def _type_and_submit(element: object, value: str) -> None:
+    """Clear a field, type into it, and submit with Enter.
+
+    Enter is used rather than clicking a submit button because eBay renames the
+    button between flows while the form has always submitted on Enter.
+
+    Args:
+        element (object): The input to fill.
+        value (str): Text to enter.
+    """
+    element.send_keys(Keys.CONTROL + "a")
+    element.send_keys(Keys.DELETE)
+    element.send_keys(value)
+    element.send_keys(Keys.ENTER)
+
+
+##################################################################################################################################################
+def ebay(password: str, driver: object, username: str | None = None) -> None:
+    """Log in to an eBay seller account, handling the one- and two-step forms.
+
+    eBay serves two sign-in layouts. When the profile still knows the user it
+    asks for the password alone; otherwise it asks for the username first and
+    only renders the password field after that is submitted. In the two-step
+    layout ``#pass`` is *present but hidden* from the start, so the previous
+    `presence_of_element_located` wait resolved immediately and `send_keys`
+    raised `ElementNotInteractableException` — this waits for it to be
+    **clickable** instead.
 
     Args:
         password (str): eBay account password.
         driver (object): Active SeleniumBase WebDriver instance.
+        username (str | None): Username for the two-step form. Falls back to the
+            ``eBay_user`` environment variable. Only needed when the profile's
+            session has lapsed far enough that eBay asks who is signing in.
+
+    Raises:
+        RuntimeError: If eBay served a captcha, if the username step is showing
+            and no username is configured, or if the password field never
+            becomes usable.
     """
-    pass_input = WebDriverWait(driver, 15).until(EC.presence_of_element_located((
-        By.ID,
-        "pass"
-    )))
+    if EBAY_CAPTCHA_MARKER in driver.current_url:
+        raise RuntimeError(
+            "eBay served a bot check instead of the sign-in form. Sign in by hand "
+            "in this Chrome profile, then re-run; retrying automatically makes it worse."
+        )
+
+    # The common case: the Chrome profile's session is still good and eBay never
+    # redirected us. Returning here keeps a healthy run from waiting out the
+    # password timeout — and from raising on a page that has no login form at all.
+    if EBAY_SIGNIN_MARKER not in driver.current_url:
+        log.info("eBay session still active — no sign-in needed.")
+        return
+
     log.info("Logging into [cyan]eBay[/cyan].")
 
-    # Clear and enter password
-    pass_input.send_keys(Keys.CONTROL + "a")
-    pass_input.send_keys(Keys.DELETE)
-    pass_input.send_keys(password)
-    pass_input.send_keys(Keys.ENTER)
+    username_field = _visible_username_field(driver)
+    if username_field is not None:
+        username = username or get_env("eBay_user", default="")
+        if not username:
+            raise RuntimeError(
+                "eBay is asking for the username and none is configured. Set "
+                "`eBay_user` in the repo's .env, or sign this Chrome profile in by hand."
+            )
+        log.info("eBay asked for the username first — submitting it.")
+        _type_and_submit(username_field, username)
+
+    try:
+        pass_input = WebDriverWait(driver, 20).until(EC.element_to_be_clickable((
+            By.ID,
+            "pass"
+        )))
+    except TimeoutException as exc:
+        if EBAY_CAPTCHA_MARKER in driver.current_url:
+            raise RuntimeError("eBay served a bot check during sign-in.") from exc
+        raise RuntimeError(
+            f"eBay's password field never became usable. Current URL: {driver.current_url}"
+        ) from exc
+
+    _type_and_submit(pass_input, password)
 
     log.success("Logged in to [cyan]eBay[/cyan] successfully.")
