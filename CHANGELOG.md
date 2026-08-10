@@ -1,5 +1,46 @@
 # Changelog
 
+## 1.4.2 — 2026-08-06
+
+### Fixed
+- **`ebay.customize_offers_table` selected the wrong columns, silently.** After 1.4.1 stopped the crash, the 12:07 run scraped a table containing only the default columns and died on the extraction gate with `empty ['StartDate']`. Root cause: the function *toggled* rather than *set*. `if not views:` and `if not watchers:` only make sense if Restore Defaults leaves those columns ON — eBay's redesigned dialog defaults to **Custom label (SKU) and Current price alone**, confirmed by both the crash DOM and the debug screenshot, so `views=True` meant "never click it" and the column simply never appeared. Views, Watchers and Sold were all silently empty; only StartDate was gated, which is the sole reason this surfaced at all.
+  - Columns are now driven to an **absolute state** via `_set_column(driver, id, desired)`, which reads `checked` first and clicks only when it differs. No assumption about eBay's defaults survives anywhere in the function.
+  - Each click is **verified**, with fallbacks: native click → `label[for=...]` click → JS click plus a bubbling `change` event. eBay wraps each input in `span.checkbox` with a sibling label, so a native click can land without toggling. A column that refuses all three raises rather than saving a wrong table.
+  - After saving, the applied column set is logged, so a bad selection is visible at the point it happens instead of surfacing later as blank data.
+  - Columns no report reads (`promoteListing`, `unansweredQuestionCount`, `bidCount`, `promotions`, `itemSpecifics`) are now explicitly set OFF instead of blind-toggled.
+  - **The clicks were not reaching eBay's React state.** Instrumentation on the 14:40 run showed all five requested boxes still checked at the moment Save was clicked, and the saved table still came back as `lineActions, title, listingSKU, price, timeRemaining` — exactly the Restore-Defaults set. Comparing the dialog's two controls in the crash DOM shows why: the checkboxes read `listingSKU, price` while the dialog's own "Arrange the order of the columns" list still held the *previously saved* set. The two are out of sync, and what got saved was neither — it was the state React held. Clicking the `<input>` sets its `checked` property without React's handler firing, so the box looks right and Save serializes something else. **The label is now the primary click target** (the browser dispatches the click on the input itself, which React does handle), with the input and JS as fallbacks. The dialog's column list is logged before Save, and a mismatch against it is warned about, since that list — not `checked` — is the honest preview of what Save will apply.
+  - **The remaining blocker is eBay's, not ours.** With React state finally correct at save time, the save is still rejected: the dialog stays open and shows *"We ran into a problem and couldn't complete your action. Please try again."* Reproduced with **no changes made at all** (open the dialog, click Save), in a **visible** browser as well as headless, and on a **second account** — so it is not our clicking, not the column choice, and not bot detection. Both accounts' stored views still list the retired `listingId`, and Restore Defaults re-adds the retired `format`, so the payload eBay sends itself contains columns its own backend no longer accepts, and no UI path exists to remove them. `customize_offers_table` now reads the dialog's alert strip after saving and raises with eBay's message verbatim, so this fails in one obvious line instead of masquerading as a selector bug.
+  - **Not yet confirmed against eBay** (superseded by the finding above): The 14:09 run proved every checkbox verified as flipped — no fallback warnings, no unreadable-state warnings, no refusal — and the saved table *still* came back as `lineActions, title, listingSKU, price, timeRemaining`. So the clicks land and Save is accepted (the dialog unmounts), yet the selection does not survive. Two candidates remain: eBay discards the selection server-side, or a React re-render clears the boxes between the per-click check and the Save click. Added for the next run: the checkbox states are re-read and logged **at save time**, which separates those two, and a post-save check raises at the cause when a requested column never appears instead of letting the caller scrape a table that is missing it.
+- **`accounts.ebay` could not sign in at all.** It waited for `#pass` to be *present* and then typed into it. eBay now serves a **two-step** form — page 1 asks for the username, and `#pass` exists in the DOM but stays hidden until page 2 — so `presence_of_element_located` resolved instantly and `send_keys` raised `ElementNotInteractableException`. The wait is now `element_to_be_clickable`, and the username step is submitted first when it is on screen.
+  - New optional `username` argument, falling back to the `eBay_user` environment variable. When eBay asks for a username and none is configured, it raises a `RuntimeError` saying so instead of dying on an interaction error.
+  - Submits with Enter rather than a Continue button: eBay renames that button between flows, while the form has always submitted on Enter.
+  - A captcha splash (`/splashui/captcha`) is now detected and raised as a clear `RuntimeError` both before and during sign-in, instead of surfacing as a mystery timeout.
+  - **Fleet-wide severity.** This helper is the only re-authentication path for all six eBay automations. The breakage was invisible only because the Chrome profiles stayed signed in; any lapsed session would have left that automation stranded on a sign-in page with no way back.
+
+### Known limitation
+- **The step-1 username locators are unverified.** Every automated hit on eBay's sign-in page during development landed on a captcha, so the two-step form could not be captured live. `_USERNAME_LOCATORS` is a best-known list (`#userid`, `input[name=userid]`, `input[autocomplete=username]`) and the code falls through to an explicit error rather than guessing further. **Needs one live confirmation against the real form.** The password-only path, the captcha path, and the error paths are all fully covered.
+
+### Tests
+- New `tests/test_ebay_login.py` (8 cases): password-only form, two-step form, env-var username fallback, missing username, hidden username input ignored, captcha before and during sign-in, and password field never usable. Full suite: 139 passing.
+
+---
+
+## 1.4.1 — 2026-08-06
+
+### Fixed
+- **`ebay.customize_offers_table` no longer dies when eBay retires a column.** eBay removed the **Item number** (`customize-listingId`) and **Format** (`customize-format`) checkboxes from the "Customize active view" dialog, and both were clicked unconditionally — so `NoSuchElementException` killed the `ebay-items-categories` run at 2026-08-06 00:00 and again on the 00:05 manual retry. Confirmed against the crash DOM: the dialog was fully rendered (all four fieldsets plus Save/Restore/Cancel) and those two ids were simply absent, while every other id the function clicks was still present. This is the binary wrong-selector failure, not a render race — a longer wait would only have failed slower.
+  - Checkbox clicks now go through `_toggle_column`, which skips ids in the new `OPTIONAL_COLUMNS` set (`itemSpecifics`, `listingId`, `format`, `promotions`) with a warning naming the id, and re-raises for anything else.
+  - **Neither retired column carried data.** Both consumers read the item number off the row (`tr.grid-row[data-id]` → `r.dataset.id`), and neither extracts Format at all, so nothing is lost. Every column a report *does* read stays required, so a real DOM change still fails loudly instead of inserting blank rows.
+  - `itemSpecifics` and `promotions` had the same tolerance already, expressed as two ad-hoc `try`/`except NoSuchElementException` blocks; they now share the one mechanism.
+
+### Tests
+- 12 new cases in `tests/test_ebay_customize.py`: each optional column missing individually, all four missing at once, six required columns each raising, and the `views=False` de-select path (which clicks to turn a column *off* and is therefore still required). Full suite: 122 passing.
+
+### Upgrade notes
+- No caller changes. `ebay-items-categories` and `ebay-best-offers` are the only consumers of `customize_offers_table` and both need `pip install -U seller-automation-utils` before their next run.
+
+---
+
 ## 1.4.0 — 2026-07-31
 
 ### Added
