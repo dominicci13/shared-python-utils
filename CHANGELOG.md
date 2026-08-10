@@ -1,10 +1,13 @@
 # Changelog
 
-## Unreleased
+## 1.5.0 — 2026-08-10
 
-Left unversioned deliberately: nothing consumes `ebay_api` yet. It gets a version
-when `ebay-items-categories` actually cuts over, so the pending 1.4.2 release can
-still ship on its own.
+Held back from 1.4.2 so that release could ship on its own, then versioned
+immediately once it had. Leaving it unversioned any longer was a mistake worth
+recording: for a short window on 2026-08-10 two different code states both called
+themselves `1.4.2` — `ebay-returns` had `ebay_api`, `ebay-items-categories` did
+not — which makes a fleet version audit lie, and stops `pip install -U` from
+reaching any repo already on 1.4.2.
 
 ### Added
 - **`ebay_api` — a Trading API client, the way off the Seller Hub scrape.** eBay's
