@@ -16,6 +16,10 @@ dependencies = [
     "pyodbc>=5.0.0",
     "pywin32>=306",
     "pillow>=10.0.0",
+    "requests>=2.31.0",
+    # Windows ships no IANA database, so zoneinfo has nothing to read without
+    # this — ebay_api converts eBay's UTC timestamps to the seller's Pacific clock.
+    "tzdata>=2024.1",
     # Capped below 4.0: APScheduler 4 drops the 3.x scheduler API this package
     # is built on (get_jobs()/next_run_time, add_listener event constants), so
     # an unpinned upgrade would break every automation in the fleet at once.

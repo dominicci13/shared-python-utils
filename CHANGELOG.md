@@ -1,5 +1,61 @@
 # Changelog
 
+## Unreleased
+
+Left unversioned deliberately: nothing consumes `ebay_api` yet. It gets a version
+when `ebay-items-categories` actually cuts over, so the pending 1.4.2 release can
+still ship on its own.
+
+### Added
+- **`ebay_api` — a Trading API client, the way off the Seller Hub scrape.** eBay's
+  Customize-table Save has been rejecting every request since 2026-08-06 (still
+  failing on 08-10), and no client-side fix reaches it. This module reads the same
+  listing data server-side: no browser, so no bot check, no React grid and no
+  Customize dialog. Credentials reuse what `ebay-best-offers` already has in
+  production — one app keyset for all accounts plus per-account user tokens named
+  by `token_env_var`.
+  - `get_active_listings(token)` sweeps `GetSellerList` and returns every active
+    listing with the eight fields the Items-Categories report needs: item number,
+    title, SKU, current price, sold quantity, watchers, start time and category.
+  - `count_active_listings(token)` is a one-call second opinion on how many active
+    listings an account has, so a sweep can prove it missed nothing.
+  - `l1_category`, `to_seller_local`, `account_token`, `token_env_var` are the pure
+    helpers callers need; build and parse are kept apart from HTTP so both are
+    unit-testable without a network.
+
+### Findings that shaped it (measured live against AccountA, 2026-08-10)
+- **`GetMyeBaySelling` cannot feed this report.** Its ActiveList items carry no
+  `PrimaryCategory` and no `QuantitySold`. `GetSellerList` carries both.
+- **`GetSellerList` returns ended listings too, and page 1 is the worst case.**
+  Results are ordered by end time ascending, so page 1 was 22–25 listings that had
+  ended earlier the same day, out of 200. Pages 31 and 62 were 100% active.
+  `get_active_listings` filters on `ListingStatus == 'Active'`; extrapolating page
+  1's ratio instead would have suggested ~1,300 phantom missing listings.
+  Arithmetic that confirms the filter: 12,278 entries − 25 ended = 12,253, which is
+  exactly what `GetMyeBaySelling` independently reported.
+- **No Taxonomy API is needed.** `PrimaryCategory/CategoryName` is the full path
+  (`Cameras & Photo:Video Production & Editing:Video Monitors`), so the report's
+  top-level bucket is `split(":")[0]`. The `/` → `-` substitution reproduces the
+  scraper's own output for `Computers/Tablets & Networking`.
+- **The end-time window is not a constraint.** Every listing is GTC
+  `FixedPriceItem` ending within ~31 days; widening the window from 90 to 120 days
+  returned zero additional listings.
+- **Timestamps shift.** Seller Hub rendered Pacific time and the API returns UTC,
+  so `to_seller_local` converts before the value reaches SQL. Adopting the raw UTC
+  value would move every StartDate by 7–8 hours.
+
+### Tests
+- New `tests/test_ebay_api.py` (42 cases): token-name normalization, credential
+  errors that never echo a token, category rollup including the `/` case, both
+  Pacific offsets and naive output, request building (paging, window, escaping,
+  page-size clamp), response parsing (full mapping, absent numerics, absent SKU as
+  `None` rather than `""`, unparseable and millisecond-less timestamps, missing
+  category, failure acks, missing pagination), and the sweep itself (ended-listing
+  filter, multi-page walk, injected window, failure ack, runaway-page guard,
+  `Warning` treated as success). Full suite: **181 passing** (was 139).
+
+---
+
 ## 1.4.2 — 2026-08-06
 
 ### Fixed

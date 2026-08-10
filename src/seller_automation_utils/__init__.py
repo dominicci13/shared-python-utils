@@ -33,6 +33,14 @@ from seller_automation_utils.custom_functions import (
 )
 from seller_automation_utils.database_utils import insert_dataframe, safe_execute
 from seller_automation_utils.ebay import customize_offers_table
+from seller_automation_utils.ebay_api import (
+    account_token,
+    count_active_listings,
+    get_active_listings,
+    l1_category,
+    to_seller_local,
+    token_env_var,
+)
 from seller_automation_utils.excel_utils import paste_image_to_sheet, refresh_workbook, run_macro
 from seller_automation_utils.fleet_state import (
     HeartbeatWriter,
@@ -81,6 +89,13 @@ __all__ = [
     "safe_execute",
     # ebay
     "customize_offers_table",
+    # ebay_api
+    "account_token",
+    "count_active_listings",
+    "get_active_listings",
+    "l1_category",
+    "to_seller_local",
+    "token_env_var",
     # excel_utils
     "paste_image_to_sheet",
     "refresh_workbook",

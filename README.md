@@ -44,6 +44,8 @@ Account name maps and eBay Chrome profiles loaded from `config/accounts.json`. A
 from seller_automation_utils import AMAZON_ACCOUNT_NAMES, EBAY_PROFILES, amazon_login
 ```
 
+`accounts.ebay(password, driver, username=None)` handles both of eBay's sign-in layouts: password-only when the profile still knows the user, and the two-step username-then-password form when it does not. Set `eBay_user` in `.env` so the two-step path can complete unattended. A captcha splash raises a `RuntimeError` rather than a timeout — sign in by hand in that Chrome profile when it fires, since retrying automatically makes it worse.
+
 ### `alert_utils`
 Capture browser screenshots, the live DOM (main document plus every iframe), and tab URLs on crash, archive all of it to disk, send a crash report via Outlook, and clean up automation processes. The archive is written *before* the email is attempted, so a broken Outlook no longer loses the traceback.
 
@@ -106,6 +108,31 @@ from seller_automation_utils import customize_offers_table
 
 customize_offers_table(driver, sold=True, watchers=True)
 ```
+
+Each column is driven to an absolute state — the checkbox is read first and clicked only when it differs, then the click is verified (native → label → JS with a bubbling `change` event). Nothing assumes what eBay's "Restore Defaults" leaves selected, because that set changes: as of Aug 2026 it is Custom label (SKU) and Current price alone.
+
+Columns listed in `OPTIONAL_COLUMNS` are skipped with a warning when eBay retires them from the Customize dialog (Item number and Format both went in Aug 2026); every other column is required, and a missing or unresponsive checkbox raises, so a real DOM change fails loudly instead of inserting blank rows.
+
+### `ebay_api`
+Read seller listing data through the eBay Trading API instead of the browser.
+
+```python
+from seller_automation_utils import account_token, get_active_listings, to_seller_local
+
+listings = get_active_listings(account_token("AccountA"))
+listings[0]["category"]                      # "Cameras & Photo"
+to_seller_local(listings[0]["start_time"])   # naive Pacific, as SQL has always stored it
+```
+
+There is no browser here, so eBay's bot check, its React grid and the Customize dialog are all out of the picture — which is why this exists, after that dialog's Save started rejecting every request in Aug 2026.
+
+Credentials come from the environment and are shared with `ebay-best-offers`: one app keyset (`EBAY_APP_ID` / `EBAY_DEV_ID` / `EBAY_CERT_ID`) plus a per-account user token named by `token_env_var` (`"AccountB"` → `EBAY_AUTH_TOKEN_ACCOUNTB`).
+
+Each listing carries `item_number`, `title`, `sku`, `current_price`, `sold_quantity`, `watchers`, `start_time` (aware UTC), `category_path`, `category` (top level, `/` normalized to `-`) and `listing_status`.
+
+Two behaviours worth knowing. `GetSellerList` selects by end time, not status, and orders results by end time ascending — so the first page is dense with listings that ended earlier the same day, and `get_active_listings` filters them out. And `GetMyeBaySelling` is deliberately not used for listing data: its items carry no category and no sold quantity. It appears only in `count_active_listings`, as an independent second opinion a sweep can check itself against.
+
+Build and parse are pure functions kept apart from the HTTP call, so both are testable without a network.
 
 ### `excel_utils`
 Open Excel workbooks, run macros, refresh Power Query, and insert images.
