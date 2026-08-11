@@ -134,6 +134,18 @@ Two behaviours worth knowing. `GetSellerList` selects by end time, not status, a
 
 Build and parse are pure functions kept apart from the HTTP call, so both are testable without a network.
 
+Views come from the **Sell Analytics** API rather than Trading, which has no view metric:
+
+```python
+from seller_automation_utils import get_listing_views
+
+views = get_listing_views("AccountA", ["123456789012", ...])   # {item_number: views}
+```
+
+That path needs an OAuth refresh token per account (`EBAY_OAUTH_REFRESH_TOKEN_<ACCOUNT>`), which is a different credential from the Trading token and not interchangeable with it. Requests are batched at eBay's cap of **200 listing ids**, and listings with no traffic — which eBay omits from the response rather than returning as zero — are filled in as 0.
+
+Be aware of the quota: `sell.analytics.traffic_report` allows **100 calls per 24h for the whole application**, shared across every automation on the keyset. A 429 is a daily budget, not a burst, so no amount of backoff helps; check the remaining budget with the Developer Analytics `rate_limit` resource.
+
 ### `excel_utils`
 Open Excel workbooks, run macros, refresh Power Query, and insert images.
 
