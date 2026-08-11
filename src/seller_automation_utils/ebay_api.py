@@ -13,6 +13,7 @@ request shape and the response handling are unit-testable without a network.
 """
 from __future__ import annotations
 
+import base64
 import html
 import logging
 import os
@@ -50,6 +51,21 @@ WINDOW_LOOKBACK_DAYS = 1
 _MAX_PAGES = 400
 
 
+OAUTH_TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token"
+TRAFFIC_REPORT_URL = "https://api.ebay.com/sell/analytics/v1/traffic_report"
+ANALYTICS_SCOPE = "https://api.ebay.com/oauth/api_scope/sell.analytics.readonly"
+
+# eBay rejects a longer list outright (errorId 50028), it does not silently trim.
+MAX_LISTING_IDS_PER_CALL = 200
+
+VIEWS_METRIC = "LISTING_VIEWS_TOTAL"
+
+# Access tokens last two hours and a sweep takes ~15 minutes per account, so one
+# mint per process is plenty. Keyed by (account, scope); 60s of slack absorbs a
+# token that would otherwise expire mid-call.
+_access_tokens: dict[tuple[str, str], tuple[str, datetime]] = {}
+
+
 def token_env_var(account: str) -> str:
     """Environment variable holding a seller account's Trading API user token.
 
@@ -83,6 +99,172 @@ def account_token(account: str) -> str:
     if not token:
         raise RuntimeError(f"No eBay Trading API token for {account!r} — set {name} in .env.")
     return token
+
+
+def oauth_refresh_env_var(account: str) -> str:
+    """Environment variable holding a seller account's OAuth refresh token.
+
+    Separate from :func:`token_env_var`: the Trading API uses a legacy Auth'n'Auth
+    token, while the REST APIs need an OAuth refresh token consented per account.
+    The two are not interchangeable and both are needed.
+
+    Args:
+        account: eBay account display name.
+
+    Returns:
+        The variable name, e.g. ``"EBAY_OAUTH_REFRESH_TOKEN_ACCOUNTA"``.
+    """
+    return "EBAY_OAUTH_REFRESH_TOKEN_" + re.sub(r"[^A-Za-z0-9]", "", account).upper()
+
+
+def oauth_access_token(account: str, scope: str = ANALYTICS_SCOPE) -> str:
+    """Mint (or reuse) a two-hour OAuth access token for one account.
+
+    Args:
+        account: eBay account display name.
+        scope: Space-delimited scopes to request. Must be a subset of what the
+            account consented to, or eBay rejects the grant.
+
+    Returns:
+        The access token.
+
+    Raises:
+        RuntimeError: No refresh token is configured, or eBay refused the grant.
+    """
+    cached = _access_tokens.get((account, scope))
+    if cached and cached[1] > datetime.now(timezone.utc):
+        return cached[0]
+
+    name = oauth_refresh_env_var(account)
+    refresh = os.getenv(name, "").strip()
+    if not refresh:
+        raise RuntimeError(
+            f"No eBay OAuth refresh token for {account!r} — set {name} in .env. "
+            "It is granted per account through eBay's consent flow; the Trading "
+            "API token does not cover the REST APIs."
+        )
+
+    basic = base64.b64encode(
+        f"{os.environ['EBAY_APP_ID']}:{os.environ['EBAY_CERT_ID']}".encode()
+    ).decode()
+    response = requests.post(
+        OAUTH_TOKEN_URL,
+        headers={"Content-Type": "application/x-www-form-urlencoded",
+                 "Authorization": f"Basic {basic}"},
+        data={"grant_type": "refresh_token", "refresh_token": refresh, "scope": scope},
+        timeout=60,
+    )
+    if response.status_code != 200:
+        raise RuntimeError(f"eBay refused the refresh grant for {account}: "
+                           f"{response.status_code} {response.text[:300]}")
+
+    payload = response.json()
+    token = payload["access_token"]
+    expires = datetime.now(timezone.utc) + timedelta(seconds=int(payload["expires_in"]) - 60)
+    _access_tokens[(account, scope)] = (token, expires)
+    return token
+
+
+def parse_traffic_report(payload: dict, metric: str = VIEWS_METRIC) -> dict[str, int]:
+    """Pull one metric out of a getTrafficReport response, keyed by listing id.
+
+    Pure (no HTTP). The metric is located by its position in ``header.metrics``
+    rather than assumed — the order follows the request, so reading
+    ``metricValues[0]`` blindly would silently swap impressions for views.
+
+    Listings with no traffic are **absent from the response**, not returned as
+    zero, so the caller must supply the zero rather than expect a key.
+
+    Args:
+        payload: Decoded getTrafficReport JSON.
+        metric: Metric key to extract.
+
+    Returns:
+        ``{listing_id: value}`` for every listing the response carried.
+
+    Raises:
+        RuntimeError: The requested metric is not present in the response header.
+    """
+    metrics = [m.get("key") for m in payload.get("header", {}).get("metrics", [])]
+    if metric not in metrics:
+        raise RuntimeError(f"getTrafficReport returned metrics {metrics}, expected {metric}.")
+    index = metrics.index(metric)
+
+    views: dict[str, int] = {}
+    for record in payload.get("records", []):
+        dimensions = record.get("dimensionValues", [])
+        values = record.get("metricValues", [])
+        if not dimensions or len(values) <= index:
+            continue
+        listing_id = dimensions[0].get("value")
+        value = values[index].get("value")
+        if listing_id is not None:
+            views[str(listing_id)] = int(value or 0)
+    return views
+
+
+def get_listing_views(account: str, listing_ids: list[str], days: int = 30) -> dict[str, int]:
+    """Fetch per-listing view counts for one account over a trailing window.
+
+    Batched because eBay caps a request at :data:`MAX_LISTING_IDS_PER_CALL` ids
+    and rejects anything longer outright. Every requested id comes back in the
+    result, defaulting to 0, so callers never have to distinguish "no traffic"
+    from "not returned".
+
+    Args:
+        account: eBay account display name.
+        listing_ids: Item numbers to look up.
+        days: Length of the trailing window, ending yesterday.
+
+    Returns:
+        ``{listing_id: views}`` covering every id passed in.
+
+    Raises:
+        RuntimeError: eBay refused the grant or returned an error response.
+    """
+    if not listing_ids:
+        return {}
+
+    token = oauth_access_token(account)
+    end = datetime.now(timezone.utc).date() - timedelta(days=1)
+    start = end - timedelta(days=days - 1)
+    window = f"{start:%Y%m%d}..{end:%Y%m%d}"
+
+    views: dict[str, int] = {}
+    batches = range(0, len(listing_ids), MAX_LISTING_IDS_PER_CALL)
+    for number, offset in enumerate(batches, start=1):
+        batch = listing_ids[offset:offset + MAX_LISTING_IDS_PER_CALL]
+        response = requests.get(
+            TRAFFIC_REPORT_URL,
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            params={
+                "dimension": "LISTING",
+                "filter": f"marketplace_ids:{{EBAY_US}},date_range:[{window}],"
+                          f"listing_ids:{{{'|'.join(batch)}}}",
+                "metric": VIEWS_METRIC,
+            },
+            timeout=120,
+        )
+        # 429 here is a *daily* quota, not a burst — retrying or backing off does
+        # not help, so say what actually happened. Measured 2026-08-11: the
+        # sell.analytics.traffic_report limit is 100 calls per 24h for the whole
+        # application, while the four accounts need 121 at 200 ids per call.
+        if response.status_code == 429:
+            raise RuntimeError(
+                f"getTrafficReport hit eBay's daily call limit for {account} on batch "
+                f"{number} of {len(range(0, len(listing_ids), MAX_LISTING_IDS_PER_CALL))}. "
+                "The sell.analytics.traffic_report quota is per application per day and is "
+                "shared across every automation on this keyset; it resets at 07:00 UTC. "
+                "Check the remaining budget with the Developer Analytics rate_limit resource."
+            )
+        if response.status_code != 200:
+            raise RuntimeError(f"getTrafficReport failed for {account} "
+                               f"(batch {number}): {response.status_code} {response.text[:300]}")
+        views.update(parse_traffic_report(response.json()))
+        log.info(f"Fetched views for {min(offset + len(batch), len(listing_ids)):,}"
+                 f"/{len(listing_ids):,} listings.")
+
+    return {listing_id: views.get(listing_id, 0) for listing_id in listing_ids}
 
 
 def l1_category(category_path: str | None) -> str:

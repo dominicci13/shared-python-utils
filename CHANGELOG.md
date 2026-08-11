@@ -1,5 +1,47 @@
 # Changelog
 
+## 1.6.0 — 2026-08-11
+
+### Added
+- **`ebay_api` gains the OAuth half — per-listing view counts.** The Trading API
+  has no view metric, so Views comes from the Sell Analytics API, which is REST on
+  OAuth 2.0 and needs a consent grant per seller account. That credential is
+  separate from the Trading token and the two are not interchangeable.
+  - `oauth_refresh_env_var(account)` / `oauth_access_token(account, scope)` —
+    refresh-token grant, cached per (account, scope) with 60s of expiry slack, so
+    a 15-minute sweep mints one token rather than one per batch.
+  - `get_listing_views(account, listing_ids, days=30)` — batches by 200 and
+    returns every id passed in.
+  - `parse_traffic_report(payload, metric)` — pure, so the response handling is
+    testable without a network.
+
+### Findings that shaped it (measured live 2026-08-11)
+- **`getTrafficReport` is capped at 200 listing ids per call** — eBay rejects a
+  longer list outright (`errorId 50028`), it does not trim. An unfiltered call
+  returns at most 200 records, so batching by id is the only complete approach.
+- **Listings with no traffic are omitted from the response, not returned as zero.**
+  200 ids came back as 182 records. `get_listing_views` fills the gap, because
+  "nobody looked" and "we failed to ask" must not become the same stored value.
+- **Metric order in `metricValues` follows the request**, and the response echoes
+  it in `header.metrics`. The metric is located by that header rather than
+  positionally: reading `metricValues[0]` would have reported 92,089 impressions
+  as views and looked entirely plausible in a report.
+- **The daily quota is the real constraint.** `sell.analytics.traffic_report`
+  allows **100 calls per 24h for the whole application**, shared across every
+  automation on the keyset, while four seller accounts holding 23,822 active
+  listings need 121 for a single pass. A 429 here is a daily budget, not a burst,
+  so it raises a message saying so instead of looking like something a retry would
+  fix. Increase requested from eBay (ticket 260811-000048).
+
+### Tests
+- New `tests/test_ebay_api_traffic.py` (17 cases): env-var naming and its
+  distinctness from the Trading token variable, credential errors, metric
+  extraction by header in both orders, absent/null metrics, zero-filling,
+  batching at the 200 boundary, no-op on an empty id list, the daily-quota
+  message, and token minting/reuse. Full suite: **198 passing** (was 181).
+
+---
+
 ## 1.5.0 — 2026-08-10
 
 Held back from 1.4.2 so that release could ship on its own, then versioned

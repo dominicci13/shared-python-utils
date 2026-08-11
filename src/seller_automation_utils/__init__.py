@@ -37,7 +37,10 @@ from seller_automation_utils.ebay_api import (
     account_token,
     count_active_listings,
     get_active_listings,
+    get_listing_views,
     l1_category,
+    oauth_access_token,
+    oauth_refresh_env_var,
     to_seller_local,
     token_env_var,
 )
@@ -93,7 +96,10 @@ __all__ = [
     "account_token",
     "count_active_listings",
     "get_active_listings",
+    "get_listing_views",
     "l1_category",
+    "oauth_access_token",
+    "oauth_refresh_env_var",
     "to_seller_local",
     "token_env_var",
     # excel_utils
