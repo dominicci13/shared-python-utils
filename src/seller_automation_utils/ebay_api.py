@@ -464,6 +464,95 @@ def parse_seller_list(xml: bytes | str) -> dict:
     }
 
 
+def build_get_item_xml(token: str, item_id: str) -> str:
+    """Build a GetItem request for one listing.
+
+    Pure (no HTTP). Used to enrich a short list of known item numbers — cheaper
+    than sweeping a whole account when only a handful of listings matter.
+
+    Args:
+        token: The seller account's Trading API user token.
+        item_id: The listing's eBay item number.
+
+    Returns:
+        The XML request body.
+    """
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>'
+        '<GetItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">'
+        f"<RequesterCredentials><eBayAuthToken>{html.escape(token)}</eBayAuthToken></RequesterCredentials>"
+        f"<ItemID>{html.escape(str(item_id))}</ItemID>"
+        "<DetailLevel>ReturnAll</DetailLevel>"
+        "</GetItemRequest>"
+    )
+
+
+def parse_item(xml: bytes | str) -> dict:
+    """Parse a GetItem response into the fields a report needs.
+
+    Pure (no HTTP). ``quantity_available`` is derived as ``Quantity`` minus
+    ``QuantitySold`` — eBay does not return an "available" figure directly, and
+    a multi-quantity listing that has sold out still reports its original
+    ``Quantity``.
+
+    Args:
+        xml: The raw response body.
+
+    Returns:
+        ``{"ack", "errors", "item"}`` where ``item`` carries ``item_number``,
+        ``title``, ``sku``, ``current_price``, ``quantity``, ``quantity_sold``,
+        ``quantity_available`` and ``listing_status``, or None when absent.
+    """
+    if isinstance(xml, str):
+        xml = xml.encode("utf-8")
+    root = ET.fromstring(xml)
+    for el in root.iter():
+        el.tag = el.tag.split("}")[-1]
+
+    errors = [
+        f"{e.findtext('ErrorCode')}: {e.findtext('LongMessage')}"
+        for e in root.findall(".//Errors")
+    ]
+    element = root.find(".//Item")
+    item = None
+    if element is not None:
+        quantity = _as_int(_text(element, "Quantity"))
+        sold = _as_int(_text(element, "SellingStatus/QuantitySold"))
+        item = {
+            "item_number": _text(element, "ItemID"),
+            "title": _text(element, "Title"),
+            "sku": _text(element, "SKU"),
+            "current_price": _as_float(_text(element, "SellingStatus/CurrentPrice")),
+            "quantity": quantity,
+            "quantity_sold": sold,
+            "quantity_available": max(quantity - sold, 0),
+            "listing_status": _text(element, "SellingStatus/ListingStatus"),
+        }
+
+    return {"ack": root.findtext("Ack") or "", "errors": errors, "item": item}
+
+
+def get_item(token: str, item_id: str) -> dict:
+    """Fetch one listing's details.
+
+    Args:
+        token: The seller account's Trading API user token.
+        item_id: The listing's eBay item number.
+
+    Returns:
+        The item dict described by :func:`parse_item`.
+
+    Raises:
+        RuntimeError: eBay returned a failure ack, or no item in the response.
+    """
+    result = parse_item(_post("GetItem", build_get_item_xml(token, item_id)))
+    if result["ack"] not in ("Success", "Warning"):
+        raise RuntimeError(f"GetItem failed for {item_id}: {result['errors'] or result['ack']}")
+    if result["item"] is None:
+        raise RuntimeError(f"GetItem returned no item for {item_id}.")
+    return result["item"]
+
+
 def build_active_count_xml(token: str) -> str:
     """Build a GetMyeBaySelling request that asks only for the active-listing count.
 
