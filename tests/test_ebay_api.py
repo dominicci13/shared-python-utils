@@ -21,7 +21,7 @@ def item_xml(
     item_id: str = "123456789012",
     title: str = "Acme AM-16 16 Channel Audio Monitor",
     sku: str | None = "ACM-AM16",
-    price: str | None = "1088.0",
+    price: str | None = "999.0",
     sold: str | None = "0",
     watchers: str | None = "3",
     start: str | None = "2025-06-10T03:07:39.000Z",
@@ -79,7 +79,7 @@ def error_xml(code: str = "21917053", message: str = "Invalid token.") -> str:
 @pytest.mark.parametrize("account,expected", [
     ("AccountB", "EBAY_AUTH_TOKEN_ACCOUNTB"),
     ("AccountA", "EBAY_AUTH_TOKEN_ACCOUNTA"),
-    ("AccountC", "EBAY_AUTH_TOKEN_ACCOUNTC"),
+    ("Account-C", "EBAY_AUTH_TOKEN_ACCOUNTC"),
     ("Some Account-1", "EBAY_AUTH_TOKEN_SOMEACCOUNT1"),
 ])
 def test_token_env_var_strips_non_alphanumerics(account, expected):
@@ -190,7 +190,7 @@ def test_parse_seller_list_maps_every_reported_field():
     item = result["items"][0]
     assert item["item_number"] == "123456789012"
     assert item["sku"] == "ACM-AM16"
-    assert item["current_price"] == 1088.0
+    assert item["current_price"] == 999.0
     assert item["sold_quantity"] == 0
     assert item["watchers"] == 3
     assert item["start_time"] == datetime(2025, 6, 10, 3, 7, 39, tzinfo=timezone.utc)

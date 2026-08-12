@@ -90,7 +90,7 @@ reaching any repo already on 1.4.2.
     helpers callers need; build and parse are kept apart from HTTP so both are
     unit-testable without a network.
 
-### Findings that shaped it (measured live against AccountA, 2026-08-10)
+### Findings that shaped it (measured live against a production seller account, 2026-08-10)
 - **`GetMyeBaySelling` cannot feed this report.** Its ActiveList items carry no
   `PrimaryCategory` and no `QuantitySold`. `GetSellerList` carries both.
 - **`GetSellerList` returns ended listings too, and page 1 is the worst case.**
