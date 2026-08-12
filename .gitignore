@@ -41,3 +41,6 @@ CLAUDE.md
 
 # Pytest cache
 .pytest_cache/
+
+# Tool artifacts (ruflo/claude-flow) — not part of the project.
+.claude-flow/
