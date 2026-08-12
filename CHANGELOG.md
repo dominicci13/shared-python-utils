@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.7.0 — 2026-08-11
+
+### Added
+- **`ebay_api.get_item`** — one listing's title, SKU, price and quantities, with
+  `quantity_available` derived as `Quantity` minus `QuantitySold` (eBay returns no
+  "available" figure, and a sold-out multi-quantity listing still reports its
+  original `Quantity`). Added for `ebay-best-offers`, which needs details for the
+  few dozen listings that carry an offer rather than a whole-account sweep.
+  - `quantity_available == 0` replaces the signal the Seller Hub grid gave by
+    omitting an offer's respond link. Measured 2026-08-11 across every listing
+    then carrying an offer: 1 of 57 out of stock (`qty 7, sold 7`, still Active),
+    against the 0-7% (avg ~2.6%) the archive recorded over the preceding fortnight.
+
+### Tests
+- New `tests/test_ebay_api_item.py` (12 cases): request building and escaping,
+  full field mapping, the sold-out-but-active case, available quantity never going
+  negative, absent quantities, a missing SKU staying `None`, failure acks, and a
+  `Success` ack carrying no item raising rather than returning `None`.
+  Full suite: **210 passing** (was 198).
+
+---
+
 ## 1.6.0 — 2026-08-11
 
 ### Added
