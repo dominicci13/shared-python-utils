@@ -146,6 +146,16 @@ That path needs an OAuth refresh token per account (`EBAY_OAUTH_REFRESH_TOKEN_<A
 
 Be aware of the quota: `sell.analytics.traffic_report` allows **100 calls per 24h for the whole application**, shared across every automation on the keyset. A 429 is a daily budget, not a burst, so no amount of backoff helps; check the remaining budget with the Developer Analytics `rate_limit` resource.
 
+Which listings an account may send offers on comes from the **Negotiation** API, the replacement for Seller Hub's `offers=sendNewOffers` filter:
+
+```python
+from seller_automation_utils import get_offer_eligible_items
+
+eligible = get_offer_eligible_items("AccountA")   # {"123456789012", ...}
+```
+
+Eligibility is eBay's own judgement and cannot be derived from listing data — measured against a scraped baseline, `Watchers > 0` selects ~16x too many listings and still misses eligible ones. This needs the `sell.negotiation` scope, granted **per keyset** by eBay, and present in each account's consent alongside every other scope it uses: a refresh token only carries what it was consented for, so re-consenting for one scope alone silently drops the others.
+
 ### `excel_utils`
 Open Excel workbooks, run macros, refresh Power Query, and insert images.
 

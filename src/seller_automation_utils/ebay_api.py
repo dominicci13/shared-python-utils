@@ -55,8 +55,14 @@ OAUTH_TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token"
 TRAFFIC_REPORT_URL = "https://api.ebay.com/sell/analytics/v1/traffic_report"
 ANALYTICS_SCOPE = "https://api.ebay.com/oauth/api_scope/sell.analytics.readonly"
 
+FIND_ELIGIBLE_ITEMS_URL = "https://api.ebay.com/sell/negotiation/v1/find_eligible_items"
+NEGOTIATION_SCOPE = "https://api.ebay.com/oauth/api_scope/sell.negotiation"
+
 # eBay rejects a longer list outright (errorId 50028), it does not silently trim.
 MAX_LISTING_IDS_PER_CALL = 200
+
+# find_eligible_items defaults to 10 a page and caps at 200.
+MAX_ELIGIBLE_ITEMS_PER_PAGE = 200
 
 VIEWS_METRIC = "LISTING_VIEWS_TOTAL"
 
@@ -265,6 +271,96 @@ def get_listing_views(account: str, listing_ids: list[str], days: int = 30) -> d
                  f"/{len(listing_ids):,} listings.")
 
     return {listing_id: views.get(listing_id, 0) for listing_id in listing_ids}
+
+
+def parse_eligible_items(payload: dict) -> list[str]:
+    """Pull the listing ids out of a find_eligible_items response.
+
+    Pure (no HTTP). eBay returns one object per eligible listing; only the id is
+    of interest, since every other field for that listing already comes from the
+    Trading sweep.
+
+    Args:
+        payload: Decoded find_eligible_items JSON.
+
+    Returns:
+        Listing ids in the order eBay returned them, ids absent skipped.
+    """
+    return [str(item["listingId"]) for item in payload.get("eligibleItems", [])
+            if item.get("listingId") is not None]
+
+
+def get_offer_eligible_items(account: str, marketplace: str = "EBAY_US") -> set[str]:
+    """Fetch the listings eBay will let this account send offers on.
+
+    This is the API replacement for Seller Hub's ``offers=sendNewOffers`` filter.
+    Eligibility is eBay's own judgement — it is not derivable from listing data,
+    and watcher count is not a usable proxy for it (measured 2026-08-13: watchers
+    select ~16x too many listings and still miss eligible ones).
+
+    Needs the ``sell.negotiation`` scope, which is granted per keyset by eBay and
+    must be present in the account's consent alongside any other scope it uses.
+
+    Args:
+        account: eBay account display name.
+        marketplace: eBay marketplace id the listings belong to.
+
+    Returns:
+        Eligible listing ids. Empty if the account currently has none.
+
+    Raises:
+        RuntimeError: eBay refused the grant, withheld the scope, or returned an
+            error response.
+    """
+    token = oauth_access_token(account, NEGOTIATION_SCOPE)
+
+    eligible: set[str] = set()
+    offset = 0
+    page = 1
+    while True:
+        if page > _MAX_PAGES:
+            raise RuntimeError(f"find_eligible_items exceeded {_MAX_PAGES} pages for {account} "
+                               "— refusing to keep paging.")
+
+        response = requests.get(
+            FIND_ELIGIBLE_ITEMS_URL,
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json",
+                     "X-EBAY-C-MARKETPLACE-ID": marketplace},
+            params={"limit": MAX_ELIGIBLE_ITEMS_PER_PAGE, "offset": offset},
+            timeout=120,
+        )
+        # The scope is granted to the application, not asked for per call, so a
+        # 403 here means the keyset lost it rather than anything about this run.
+        if response.status_code == 403:
+            raise RuntimeError(
+                f"find_eligible_items was refused for {account}: the keyset does not carry "
+                f"{NEGOTIATION_SCOPE}. That is an eBay-side grant, not a config change."
+            )
+        if response.status_code != 200:
+            raise RuntimeError(f"find_eligible_items failed for {account} "
+                               f"(page {page}): {response.status_code} {response.text[:300]}")
+
+        payload = response.json()
+        listing_ids = parse_eligible_items(payload)
+        eligible.update(listing_ids)
+
+        # Advance by what actually came back, not by the requested page size, so a
+        # short page cannot skip listings.
+        offset += len(listing_ids)
+        total = payload.get("total")
+        if total is None:
+            # eBay has always sent it. Without it, keep going while pages come back
+            # full rather than treating the first page as the whole account.
+            done = len(listing_ids) < MAX_ELIGIBLE_ITEMS_PER_PAGE
+        else:
+            done = offset >= int(total)
+
+        if not listing_ids or done:
+            break
+        page += 1
+
+    log.info(f"{account}: {len(eligible):,} listing(s) eligible for seller-initiated offers.")
+    return eligible
 
 
 def l1_category(category_path: str | None) -> str:
