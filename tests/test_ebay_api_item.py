@@ -15,8 +15,8 @@ from seller_automation_utils import ebay_api
 NS = "urn:ebay:apis:eBLBaseComponents"
 
 
-def item_xml(item_id: str = "287106735858", title: str = "A Camera & Lens",
-             sku: str | None = "16836580_FCLN", price: str | None = "129.99",
+def item_xml(item_id: str = "123456789012", title: str = "A Camera & Lens",
+             sku: str | None = "10000001_ABCD", price: str | None = "129.99",
              quantity: str | None = "7", sold: str | None = "7",
              status: str = "Active", ack: str = "Success", with_item: bool = True) -> str:
     parts = [f"<ItemID>{item_id}</ItemID>", f"<Title>{escape(title)}</Title>"]
@@ -37,8 +37,8 @@ def item_xml(item_id: str = "287106735858", title: str = "A Camera & Lens",
 # --- request building --------------------------------------------------------
 
 def test_the_request_carries_the_item_and_escapes_the_token():
-    body = ebay_api.build_get_item_xml("a&b", "287106735858")
-    assert "<ItemID>287106735858</ItemID>" in body
+    body = ebay_api.build_get_item_xml("a&b", "123456789012")
+    assert "<ItemID>123456789012</ItemID>" in body
     assert "a&amp;b" in body
 
 
@@ -50,9 +50,9 @@ def test_an_integer_item_id_is_accepted():
 
 def test_every_needed_field_is_mapped():
     item = ebay_api.parse_item(item_xml())["item"]
-    assert item["item_number"] == "287106735858"
+    assert item["item_number"] == "123456789012"
     assert item["title"] == "A Camera & Lens"
-    assert item["sku"] == "16836580_FCLN"
+    assert item["sku"] == "10000001_ABCD"
     assert item["current_price"] == 129.99
     assert item["listing_status"] == "Active"
 
@@ -99,7 +99,7 @@ def test_a_failure_ack_carries_the_errors():
 
 def test_get_item_returns_the_parsed_item(monkeypatch):
     monkeypatch.setattr(ebay_api, "_post", lambda *a, **k: item_xml().encode("utf-8"))
-    assert ebay_api.get_item("tok", "287106735858")["quantity_available"] == 0
+    assert ebay_api.get_item("tok", "123456789012")["quantity_available"] == 0
 
 
 def test_get_item_raises_on_a_failure_ack(monkeypatch):
