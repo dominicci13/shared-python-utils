@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.8.0 — 2026-08-13
+
+### Added
+- **`ebay_api.get_offer_eligible_items`** — the listings eBay will let an account
+  send offers on, via Negotiation `find_eligible_items`. Replaces Seller Hub's
+  `offers=sendNewOffers` filter, which is what fed the "Send Offers-eligible"
+  bucket in `ebay-items-categories`. Pages by what each response actually
+  returned rather than by the requested page size, so a short page cannot skip
+  listings.
+  - Eligibility is eBay's own judgement and is **not derivable from listing
+    data**. Measured 2026-08-13 against the last scraped baseline: `Watchers > 0`
+    selects 14,237 listings against the real 864, and 59 eligible listings have
+    zero watchers. Do not approximate it.
+  - Needs the `sell.negotiation` scope, which eBay grants **per keyset**. A 403 is
+    reported as the missing grant rather than as an empty result, since "no
+    eligible listings" is otherwise a plausible-looking business fact.
+
+### Tests
+- New `tests/test_ebay_api_negotiation.py` (15 cases): parsing and id coercion,
+  single-page and multi-page walks, a short page advancing by its real length, an
+  empty page stopping a walk an overstated `total` would otherwise spin on, a
+  response carrying **no `total`** (paging continues while pages come back full,
+  rather than reading the absence as zero and under-reporting silently), the
+  runaway-page guard, the marketplace header, the token being minted for the
+  negotiation scope rather than the Analytics default, and both failure paths.
+  Full suite: **225 passing** (was 210).
+
+---
+
 ## 1.7.0 — 2026-08-11
 
 ### Added
