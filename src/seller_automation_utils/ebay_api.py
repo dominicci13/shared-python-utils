@@ -56,7 +56,12 @@ TRAFFIC_REPORT_URL = "https://api.ebay.com/sell/analytics/v1/traffic_report"
 ANALYTICS_SCOPE = "https://api.ebay.com/oauth/api_scope/sell.analytics.readonly"
 
 FIND_ELIGIBLE_ITEMS_URL = "https://api.ebay.com/sell/negotiation/v1/find_eligible_items"
-NEGOTIATION_SCOPE = "https://api.ebay.com/oauth/api_scope/sell.negotiation"
+# findEligibleItems is authorized by the inventory read scope, not by
+# `sell.negotiation` — that scope is not grantable to this keyset at all, and
+# eBay confirmed the inventory scopes on ticket 260817-000055 (2026-08-21).
+# Verified live 2026-08-25: the same refresh token returns 200 under this
+# scope and 403 under sell.analytics.readonly.
+INVENTORY_READONLY_SCOPE = "https://api.ebay.com/oauth/api_scope/sell.inventory.readonly"
 
 # eBay rejects a longer list outright (errorId 50028), it does not silently trim.
 MAX_LISTING_IDS_PER_CALL = 200
@@ -298,8 +303,11 @@ def get_offer_eligible_items(account: str, marketplace: str = "EBAY_US") -> set[
     and watcher count is not a usable proxy for it (measured 2026-08-13: watchers
     select ~16x too many listings and still miss eligible ones).
 
-    Needs the ``sell.negotiation`` scope, which is granted per keyset by eBay and
-    must be present in the account's consent alongside any other scope it uses.
+    Needs ``sell.inventory.readonly``. That is not a typo for a Negotiation
+    scope: ``sell.negotiation`` cannot be granted to this keyset and does not
+    authorize this call. The scope must be in the account's consent alongside
+    every other scope it uses, because a refresh token carries only what it was
+    consented for — re-consenting for one scope alone silently drops the rest.
 
     Args:
         account: eBay account display name.
@@ -312,7 +320,7 @@ def get_offer_eligible_items(account: str, marketplace: str = "EBAY_US") -> set[
         RuntimeError: eBay refused the grant, withheld the scope, or returned an
             error response.
     """
-    token = oauth_access_token(account, NEGOTIATION_SCOPE)
+    token = oauth_access_token(account, INVENTORY_READONLY_SCOPE)
 
     eligible: set[str] = set()
     offset = 0
@@ -329,12 +337,13 @@ def get_offer_eligible_items(account: str, marketplace: str = "EBAY_US") -> set[
             params={"limit": MAX_ELIGIBLE_ITEMS_PER_PAGE, "offset": offset},
             timeout=120,
         )
-        # The scope is granted to the application, not asked for per call, so a
-        # 403 here means the keyset lost it rather than anything about this run.
+        # The scope rides on the token, so a 403 here means this account's consent
+        # lacks it rather than anything about this run.
         if response.status_code == 403:
             raise RuntimeError(
                 f"find_eligible_items was refused for {account}: the keyset does not carry "
-                f"{NEGOTIATION_SCOPE}. That is an eBay-side grant, not a config change."
+                f"{INVENTORY_READONLY_SCOPE}. Re-consent the account for that scope "
+                "alongside the ones it already uses."
             )
         if response.status_code != 200:
             raise RuntimeError(f"find_eligible_items failed for {account} "

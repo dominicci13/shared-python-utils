@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.8.1
+
+### Fixed
+- `get_offer_eligible_items` now mints its token with `sell.inventory.readonly`
+  instead of `sell.negotiation`. The Negotiation scope does not authorize
+  `findEligibleItems` and is not grantable to the keyset this was written for, so
+  1.8.0 could never have made a successful live call — it failed at the token mint
+  with `invalid_scope`, before the request it was designed around.
+- eBay confirmed the inventory scopes on ticket 260817-000055 (2026-08-21).
+  Verified live 2026-08-25 across four accounts: identical refresh tokens return
+  HTTP 200 under `sell.inventory.readonly` and 403 under `sell.analytics.readonly`,
+  so the scope is what authorizes the call, not the freshness of the consent.
+- `NEGOTIATION_SCOPE` is replaced by `INVENTORY_READONLY_SCOPE`. Breaking for any
+  caller importing the old name; nothing in the fleet did.
+
 ## 1.8.0 — 2026-08-13
 
 ### Added
@@ -13,7 +28,7 @@
     data**. Measured 2026-08-13 against the last scraped baseline: `Watchers > 0`
     selects 14,237 listings against the real 864, and 59 eligible listings have
     zero watchers. Do not approximate it.
-  - Needs the `sell.negotiation` scope, which eBay grants **per keyset**. A 403 is
+  - Needs the `sell.inventory.readonly` scope (corrected in 1.8.1). A 403 is
     reported as the missing grant rather than as an empty result, since "no
     eligible listings" is otherwise a plausible-looking business fact.
 
