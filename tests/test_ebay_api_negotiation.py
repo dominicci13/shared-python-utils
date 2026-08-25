@@ -167,23 +167,23 @@ def test_the_call_is_scoped_to_a_marketplace(token, monkeypatch):
     assert seen["X-EBAY-C-MARKETPLACE-ID"] == "EBAY_US"
 
 
-def test_the_token_is_minted_for_the_negotiation_scope(monkeypatch):
-    # Asking with the Analytics default would be refused; the two scopes are
-    # granted separately and a token only carries what it was consented for.
+def test_the_token_is_minted_for_the_inventory_readonly_scope(monkeypatch):
+    # Asking with the Analytics default returns 403 against the live endpoint;
+    # a token only carries the scopes it was consented for.
     scopes = []
     monkeypatch.setattr(ebay_api, "oauth_access_token",
                         lambda account, scope: scopes.append(scope) or "tok")
     monkeypatch.setattr(ebay_api.requests, "get", lambda *a, **k: FakeResponse(eligible([])))
     ebay_api.get_offer_eligible_items("AccountA")
-    assert scopes == [ebay_api.NEGOTIATION_SCOPE]
+    assert scopes == [ebay_api.INVENTORY_READONLY_SCOPE]
 
 
 def test_a_403_names_the_missing_scope_rather_than_the_run(token, monkeypatch):
     # Reported as "no eligible listings" this would look like a quiet business
-    # fact instead of a keyset that lost its grant.
+    # fact instead of a consent that is missing the scope.
     monkeypatch.setattr(ebay_api.requests, "get",
                         lambda *a, **k: FakeResponse({"errors": [{"errorId": 1100}]}, status=403))
-    with pytest.raises(RuntimeError, match="sell.negotiation"):
+    with pytest.raises(RuntimeError, match="sell.inventory.readonly"):
         ebay_api.get_offer_eligible_items("AccountA")
 
 
