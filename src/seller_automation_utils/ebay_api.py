@@ -218,23 +218,63 @@ def get_listing_views(account: str, listing_ids: list[str], days: int = 30) -> d
     """Fetch per-listing view counts for one account over a trailing window.
 
     Batched because eBay caps a request at :data:`MAX_LISTING_IDS_PER_CALL` ids
-    and rejects anything longer outright. Every requested id comes back in the
-    result, defaulting to 0, so callers never have to distinguish "no traffic"
-    from "not returned".
+    and rejects anything longer outright.
+
+    Ids that eBay omits from the report are filled with 0, because eBay drops
+    zero-traffic listings rather than returning them as 0. The fill promises
+    only that every requested id has a key — **not** that the 0 was measured:
+    an id that does not exist, or that belongs to another seller account, fills
+    identically. Two guards keep that from passing as data: ids are validated as
+    digit strings before any request, and a batch that parses to no records at
+    all is logged as a warning.
 
     Args:
         account: eBay account display name.
-        listing_ids: Item numbers to look up.
-        days: Length of the trailing window, ending yesterday.
+        listing_ids: Item numbers to look up, as strings or ints. Each must be
+            all digits once surrounding whitespace is stripped. Duplicates are
+            requested once, in first-seen order.
+        days: Length of the trailing window, ending yesterday. Must be >= 1.
 
     Returns:
-        ``{listing_id: views}`` covering every id passed in.
+        ``{listing_id: views}`` with one entry per *unique* id passed in, 0 where
+        eBay returned no record for it. **Keys are the stripped string form**, so
+        an id passed as ``123`` or ``" 123 "`` comes back under ``"123"`` —
+        map results back by that form, not by the value you passed in.
 
     Raises:
+        ValueError: An id is not all digits once stripped, or `days` is below 1.
+            Raised before the first request, so a bad input costs no quota.
         RuntimeError: eBay refused the grant or returned an error response.
     """
+    if days < 1:
+        raise ValueError(f"get_listing_views needs days >= 1, got {days!r}.")
     if not listing_ids:
         return {}
+
+    malformed: list[str] = []
+    unique: list[str] = []
+    seen: set[str] = set()
+    for listing_id in listing_ids:
+        candidate = str(listing_id).strip()
+        # Digits-only, and `[0-9]` not `\d` — `\d` accepts Arabic-Indic and
+        # fullwidth digits, and `|` / `}` would close the filter string early.
+        if not re.fullmatch(r"[0-9]+", candidate):
+            malformed.append(candidate)
+        elif candidate not in seen:
+            seen.add(candidate)
+            unique.append(candidate)
+    if malformed:
+        raise ValueError(
+            f"get_listing_views got {len(malformed):,} listing id(s) for {account} that are "
+            f"not digit strings: {malformed[:5]}. eBay matches nothing against them and the "
+            "zero-fill would hide that, so the run stops before spending any quota. Ids "
+            "shaped like '123456789012.0' usually come through a float64 column."
+        )
+    duplicates = len(listing_ids) - len(unique)
+    if duplicates:
+        log.debug(f"Dropped {duplicates:,} duplicate listing id(s) for {account}; "
+                  f"requesting {len(unique):,} unique ids.")
+    listing_ids = unique
 
     token = oauth_access_token(account)
     end = datetime.now(timezone.utc).date() - timedelta(days=1)
@@ -242,6 +282,7 @@ def get_listing_views(account: str, listing_ids: list[str], days: int = 30) -> d
     window = f"{start:%Y%m%d}..{end:%Y%m%d}"
 
     views: dict[str, int] = {}
+    returned = 0
     batches = range(0, len(listing_ids), MAX_LISTING_IDS_PER_CALL)
     for number, offset in enumerate(batches, start=1):
         batch = listing_ids[offset:offset + MAX_LISTING_IDS_PER_CALL]
@@ -257,23 +298,38 @@ def get_listing_views(account: str, listing_ids: list[str], days: int = 30) -> d
             timeout=120,
         )
         # 429 here is a *daily* quota, not a burst — retrying or backing off does
-        # not help, so say what actually happened. Measured 2026-08-11: the
-        # sell.analytics.traffic_report limit is 100 calls per 24h for the whole
-        # application, while the four accounts need 121 at 200 ids per call.
+        # not help, so say what actually happened. The
+        # sell.analytics.traffic_report limit is 500 calls per 24h for the whole
+        # application (raised from 100 via eBay's Application Growth Check,
+        # 2026-09-09), and every caller on the keyset draws from the same pool.
         if response.status_code == 429:
             raise RuntimeError(
                 f"getTrafficReport hit eBay's daily call limit for {account} on batch "
                 f"{number} of {len(range(0, len(listing_ids), MAX_LISTING_IDS_PER_CALL))}. "
                 "The sell.analytics.traffic_report quota is per application per day and is "
-                "shared across every automation on this keyset; it resets at 07:00 UTC. "
+                "shared across every automation on this keyset. It resets on eBay's Pacific "
+                "midnight, which is 07:00 or 08:00 UTC depending on US DST. "
                 "Check the remaining budget with the Developer Analytics rate_limit resource."
             )
         if response.status_code != 200:
             raise RuntimeError(f"getTrafficReport failed for {account} "
                                f"(batch {number}): {response.status_code} {response.text[:300]}")
-        views.update(parse_traffic_report(response.json()))
-        log.info(f"Fetched views for {min(offset + len(batch), len(listing_ids)):,}"
-                 f"/{len(listing_ids):,} listings.")
+        parsed = parse_traffic_report(response.json())
+        if not parsed:
+            # Zero records is legitimate for an account with no traffic in the
+            # window, but it looks identical to having asked wrong: an id that
+            # passed through a float64 pandas column ("123456789012.0"), or one
+            # from another seller account, matches nothing at eBay. The
+            # zero-fill cannot tell those apart, so it says so out loud.
+            log.warning(
+                f"getTrafficReport returned no records for {account} batch {number} "
+                f"({len(batch):,} ids). All {len(batch):,} will store as 0 views. That is "
+                "correct only if none of them had any traffic in the window."
+            )
+        views.update(parsed)
+        returned += len(parsed)
+        log.info(f"eBay returned views for {returned:,}/{len(listing_ids):,} listings "
+                 f"after batch {number}.")
 
     return {listing_id: views.get(listing_id, 0) for listing_id in listing_ids}
 

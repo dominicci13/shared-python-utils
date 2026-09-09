@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.8.2 — 2026-09-09
+
+### Fixed
+- `get_listing_views` no longer lets a malformed listing id pass as real data.
+  Ids are validated as all-digit strings (after `str()` and `.strip()`) **before**
+  the token grant and before any request, raising `ValueError` that names the
+  account, the count and the first five offenders — so a bad id costs no quota.
+  An id that arrived through a float64 pandas column as `"123456789012.0"`
+  previously matched nothing at eBay and was zero-filled silently, which is
+  indistinguishable from a listing nobody looked at.
+- The progress log counted ids *requested*, not records *returned*, so a batch
+  where eBay answered with no records logged `Fetched views for 200/200 listings`
+  while storing 200 zeros. It now reports records returned, and a batch that
+  parses to zero records logs a warning naming the account, the batch and the id
+  count. Expect `N < total` on a normal run: eBay omits zero-traffic listings and
+  they are zero-filled afterwards.
+- `days` below 1 now raises instead of building an inverted window that eBay
+  answers with no records.
+- `[0-9]` rather than `\d` is deliberate: `\d`, `str.isdigit()` and `int()` all
+  accept Arabic-Indic and fullwidth digits, and `|` / `}` would close the
+  `filter` string early. The check is what keeps both out of the request.
+
+### Changed
+- Duplicate listing ids are requested **once**, in first-seen order. They were
+  previously sent in every batch they fell in, spending quota, then collapsed on
+  return — so a caller comparing `len(result)` to `len(listing_ids)` saw an
+  unexplained mismatch. Callers now get one entry per *unique* id, keyed by the
+  stripped string form.
+- `sell.analytics.traffic_report` documented as **500 calls / 24h per
+  application** (raised from 100 on 2026-09-09 via eBay's Application Growth
+  Check, ticket 260811-000048). The reset is eBay's Pacific midnight, so read
+  `resetTime` off the Developer Analytics `rate_limit` resource rather than
+  assuming a fixed UTC hour.
+
+Suite 225 -> 243.
+
 ## 1.8.1
 
 ### Fixed
@@ -90,14 +126,16 @@
   "nobody looked" and "we failed to ask" must not become the same stored value.
 - **Metric order in `metricValues` follows the request**, and the response echoes
   it in `header.metrics`. The metric is located by that header rather than
-  positionally: reading `metricValues[0]` would have reported 92,089 impressions
+  positionally: reading `metricValues[0]` would have reported impressions
   as views and looked entirely plausible in a report.
 - **The daily quota is the real constraint.** `sell.analytics.traffic_report`
   allows **100 calls per 24h for the whole application**, shared across every
-  automation on the keyset, while four seller accounts holding 23,822 active
-  listings need 121 for a single pass. A 429 here is a daily budget, not a burst,
+  automation on the keyset, while four seller accounts holding roughly 24,000
+  active listings need 121 for a single pass. A 429 here is a daily budget, not a burst,
   so it raises a message saying so instead of looking like something a retry would
   fix. Increase requested from eBay (ticket 260811-000048).
+  **Granted 2026-09-09 — the limit is now 500/day** (Application Growth Check);
+  the 100 above is the historical default this release was measured against.
 
 ### Tests
 - New `tests/test_ebay_api_traffic.py` (17 cases): env-var naming and its

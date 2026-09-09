@@ -6,6 +6,8 @@ listings that have no traffic.
 """
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from seller_automation_utils import ebay_api
@@ -72,20 +74,20 @@ def test_missing_refresh_token_names_the_variable(monkeypatch):
 
 def test_views_are_read_by_header_position_not_blindly():
     # Impressions come first in the response; taking metricValues[0] would report
-    # 92089 views instead of 1672.
+    # 40000 views instead of 900.
     payload = report(["LISTING_IMPRESSION_TOTAL", "LISTING_VIEWS_TOTAL"],
-                     [("111", [92089, 1672])])
-    assert ebay_api.parse_traffic_report(payload) == {"111": 1672}
+                     [("111", [40000, 900])])
+    assert ebay_api.parse_traffic_report(payload) == {"111": 900}
 
 
 def test_views_are_found_when_the_metric_comes_first():
     payload = report(["LISTING_VIEWS_TOTAL", "LISTING_IMPRESSION_TOTAL"],
-                     [("111", [1672, 92089])])
-    assert ebay_api.parse_traffic_report(payload) == {"111": 1672}
+                     [("111", [900, 40000])])
+    assert ebay_api.parse_traffic_report(payload) == {"111": 900}
 
 
 def test_an_absent_metric_raises_rather_than_guessing():
-    payload = report(["LISTING_IMPRESSION_TOTAL"], [("111", [92089])])
+    payload = report(["LISTING_IMPRESSION_TOTAL"], [("111", [40000])])
     with pytest.raises(RuntimeError, match="LISTING_VIEWS_TOTAL"):
         ebay_api.parse_traffic_report(payload)
 
@@ -164,6 +166,154 @@ def test_the_requested_window_ends_yesterday(creds, monkeypatch):
     start, end = window.split("..")
     assert len(start) == len(end) == 8
     assert start < end
+
+
+# --- id validation -----------------------------------------------------------
+
+@pytest.mark.parametrize("bad_id", [
+    "123456789012.0",
+    123456789012.0,
+    "abc",
+    "",
+    "   ",
+    "123|456",
+    "12}34",
+    "123-456",
+])
+def test_a_non_digit_listing_id_raises_before_any_request(bad_id, creds, monkeypatch):
+    # eBay matches nothing against these, and the zero-fill would report the
+    # whole batch as "no traffic" instead. `|` and `}` also close the filter
+    # string early, so the same check is what keeps them out of the request.
+    def explode(*args, **kwargs):
+        raise AssertionError("should not have contacted eBay")
+
+    monkeypatch.setattr(ebay_api.requests, "get", explode)
+    monkeypatch.setattr(ebay_api.requests, "post", explode)
+    with pytest.raises(ValueError, match="not digit strings"):
+        ebay_api.get_listing_views("AccountA", ["111", bad_id, "222"])
+
+
+def test_the_validation_error_names_the_offenders_and_the_count(creds, monkeypatch):
+    def explode(*args, **kwargs):
+        raise AssertionError("should not have contacted eBay")
+
+    monkeypatch.setattr(ebay_api.requests, "get", explode)
+    monkeypatch.setattr(ebay_api.requests, "post", explode)
+    with pytest.raises(ValueError) as excinfo:
+        ebay_api.get_listing_views("AccountA", ["111", "123456789012.0", "abc"])
+
+    message = str(excinfo.value)
+    assert "AccountA" in message
+    assert "2 listing id(s)" in message
+    assert "123456789012.0" in message and "abc" in message
+
+
+@pytest.mark.parametrize("days", [0, -1])
+def test_a_window_shorter_than_a_day_raises_before_any_request(creds, monkeypatch, days):
+    # days=0 builds an inverted window (start after end), which eBay answers with
+    # no records — indistinguishable from a legitimately quiet account.
+    def explode(*args, **kwargs):
+        raise AssertionError("should not have contacted eBay")
+
+    monkeypatch.setattr(ebay_api.requests, "get", explode)
+    monkeypatch.setattr(ebay_api.requests, "post", explode)
+    with pytest.raises(ValueError, match="days >= 1"):
+        ebay_api.get_listing_views("AccountA", ["111"], days=days)
+
+
+def test_an_int_id_is_accepted_and_keyed_by_its_string_form(creds, monkeypatch):
+    monkeypatch.setattr(ebay_api, "oauth_access_token", lambda *a, **k: "tok")
+    monkeypatch.setattr(ebay_api.requests, "get",
+                        lambda *a, **k: FakeResponse(
+                            report(["LISTING_VIEWS_TOTAL"], [("111", [5])])))
+    assert ebay_api.get_listing_views("AccountA", [111, " 111 "]) == {"111": 5}
+
+
+# --- de-duplication ----------------------------------------------------------
+
+def test_duplicate_ids_are_requested_once_and_returned_once(creds, monkeypatch):
+    monkeypatch.setattr(ebay_api, "oauth_access_token", lambda *a, **k: "tok")
+    sent: list[list[str]] = []
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        ids = params["filter"].split("listing_ids:{")[1].rstrip("}").split("|")
+        sent.append(ids)
+        return FakeResponse(report(["LISTING_VIEWS_TOTAL"], [("111", [5])]))
+
+    monkeypatch.setattr(ebay_api.requests, "get", fake_get)
+    result = ebay_api.get_listing_views("AccountA", ["111", "222", "111", " 222 "])
+    assert sent == [["111", "222"]]
+    assert result == {"111": 5, "222": 0}
+
+
+def test_duplicates_do_not_buy_a_second_batch(creds, monkeypatch):
+    # Undeduplicated, 300 ids spanning two batches cost two calls out of the
+    # daily budget and still collapse to 150 entries on return.
+    monkeypatch.setattr(ebay_api, "oauth_access_token", lambda *a, **k: "tok")
+    calls: list[int] = []
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        ids = params["filter"].split("listing_ids:{")[1].rstrip("}").split("|")
+        calls.append(len(ids))
+        return FakeResponse(report(["LISTING_VIEWS_TOTAL"], [(i, [1]) for i in ids]))
+
+    monkeypatch.setattr(ebay_api.requests, "get", fake_get)
+    result = ebay_api.get_listing_views("AccountA", [str(n) for n in range(150)] * 2)
+    assert calls == [150]
+    assert len(result) == 150
+
+
+# --- reporting what actually came back ---------------------------------------
+
+def test_a_batch_with_no_records_warns_and_still_zero_fills(creds, monkeypatch, caplog):
+    monkeypatch.setattr(ebay_api, "oauth_access_token", lambda *a, **k: "tok")
+    monkeypatch.setattr(ebay_api.requests, "get",
+                        lambda *a, **k: FakeResponse(report(["LISTING_VIEWS_TOTAL"], [])))
+    with caplog.at_level(logging.WARNING, logger="seller_automation_utils.ebay_api"):
+        result = ebay_api.get_listing_views("AccountA", ["111", "222"])
+
+    assert result == {"111": 0, "222": 0}
+    assert "no records" in caplog.text
+    assert "AccountA" in caplog.text
+    assert "0 views" in caplog.text
+
+
+def test_a_batch_with_records_does_not_warn(creds, monkeypatch, caplog):
+    monkeypatch.setattr(ebay_api, "oauth_access_token", lambda *a, **k: "tok")
+    monkeypatch.setattr(ebay_api.requests, "get",
+                        lambda *a, **k: FakeResponse(report(["LISTING_VIEWS_TOTAL"], [("111", [5])])))
+    with caplog.at_level(logging.INFO, logger="seller_automation_utils.ebay_api"):
+        assert ebay_api.get_listing_views("AccountA", ["111", "222"]) == {"111": 5, "222": 0}
+
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+
+def test_the_progress_log_counts_records_returned_not_ids_requested(creds, monkeypatch, caplog):
+    # The old line counted ids requested, so a batch eBay answered with nothing
+    # still logged "3/3" while all three landed as 0 views.
+    monkeypatch.setattr(ebay_api, "oauth_access_token", lambda *a, **k: "tok")
+    monkeypatch.setattr(ebay_api.requests, "get",
+                        lambda *a, **k: FakeResponse(report(["LISTING_VIEWS_TOTAL"], [("111", [5])])))
+    with caplog.at_level(logging.INFO, logger="seller_automation_utils.ebay_api"):
+        ebay_api.get_listing_views("AccountA", ["111", "222", "333"])
+
+    assert "1/3" in caplog.text
+    assert "3/3" not in caplog.text
+
+
+def test_the_progress_log_accumulates_across_batches(creds, monkeypatch, caplog):
+    monkeypatch.setattr(ebay_api, "oauth_access_token", lambda *a, **k: "tok")
+
+    def fake_get(url, headers=None, params=None, timeout=None):
+        first = params["filter"].split("listing_ids:{")[1].rstrip("}").split("|")[0]
+        return FakeResponse(report(["LISTING_VIEWS_TOTAL"], [(first, [7])]))
+
+    monkeypatch.setattr(ebay_api.requests, "get", fake_get)
+    with caplog.at_level(logging.INFO, logger="seller_automation_utils.ebay_api"):
+        ebay_api.get_listing_views("AccountA", [str(n) for n in range(250)])
+
+    assert "1/250" in caplog.text
+    assert "2/250" in caplog.text
 
 
 # --- token caching -----------------------------------------------------------
