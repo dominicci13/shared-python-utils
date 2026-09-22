@@ -89,15 +89,22 @@ kill_app("chrome")
 ```
 
 ### `database_utils`
-Bulk DataFrame inserts for SQL Server via pyodbc `fast_executemany` (~23× the old
-per-row loop). Bind widths are pinned from the live table schema, so long strings
+Bulk DataFrame inserts for SQL Server via pyodbc `fast_executemany` (~3-8× the old
+per-row loop on 2,000-row batches; up to ~23× measured on one large load). Bind widths are pinned from the live table schema, so long strings
 do not truncate; a driver error rolls back and replays row-by-row to name the
 offending row. Requires the **ODBC Driver 17** connection from `sql_connection`.
+
+Column names are bracketed in the INSERT text (since 1.8.3), so hyphens, spaces,
+symbols and reserved words (`your-price`, `P&L (30 days)`, `rank`) need no
+caller-side quoting. Already-bracketed names (`[your-price]`) are accepted and never
+double-bracketed. Each name is also the DataFrame key exactly as passed. The table
+name is used verbatim. Pass a bare table name (`Orders`); a schema-qualified name
+still inserts but pins no widths.
 
 ```python
 from seller_automation_utils import insert_dataframe
 
-insert_dataframe(cursor, "dbo.Orders", df, columns=["OrderId", "Status"])
+insert_dataframe(cursor, "Orders", df, columns=["OrderId", "Status", "ship-date"])
 ```
 
 ### `ebay`

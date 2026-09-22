@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.8.3 — 2026-09-22
+
+### Fixed
+- `insert_dataframe` now brackets every column name in the INSERT text, so a name
+  with a hyphen, space or symbol (`your-price`, `P&L (30 days)`) or a reserved word
+  (`rank`) is valid T-SQL. It previously interpolated names verbatim and such a
+  column failed the insert. Bracketing is **idempotent**: an already-bracketed
+  name (`[your-price]`) is not doubled, and an embedded `]` is escaped as `]]`
+  exactly once. `table_name` is still used verbatim, so `dbo.Orders` still builds a
+  valid INSERT, but bind widths are pinned only for a bare table name (`Orders`).
+  An empty column name now raises `ValueError` before anything is written.
+- Bind-width pinning silently skipped every pre-bracketed column. `_input_sizes`
+  looked the name up in `cursor.columns()` metadata as passed, and the driver
+  reports bare names, so `[product-name]` never matched and was left to
+  fast_executemany's first-row sizing. A longer later value then raised "String
+  data, right truncation" and the whole batch fell back to the slow row-by-row
+  replay. The lookup now uses the unbracketed name; the DataFrame is still
+  indexed by the name exactly as passed.
+
+### Compatibility
+- Callers that already bracket names and key their DataFrame by the bracketed
+  form keep working unchanged. Two dependent repos can remove the insert-path
+  renaming in their private `_sql_identifier` workarounds (the bracketed column
+  list and the matching DataFrame rename) once that repo's venv is on 1.8.3, and
+  not before: removing it against an older installed library breaks the insert
+  on the next restart. A helper that also builds other SQL stays.
+
+Suite 243 -> 287.
+
 ## 1.8.2 — 2026-09-09
 
 ### Fixed
@@ -409,7 +438,7 @@ reaching any repo already on 1.4.2.
 ## 1.0.0 — 2026-05-22
 
 ### Renamed
-- **Package renamed from `fc-utils` to `seller-automation-utils`** (and the Python import name from `fc_utils` to `seller_automation_utils`). The new name describes the package's purpose without any project-specific shorthand. Consumers must update their `requirements.txt` (`fc-utils @ git+...` → `seller-automation-utils @ git+...`) and any `from fc_utils.X import Y` statements to `from seller_automation_utils.X import Y`. No public API or behavior changes.
+- **Package renamed from the legacy package name to `seller-automation-utils`** (and the Python import name from the legacy package to `seller_automation_utils`). The new name describes the package's purpose without any project-specific shorthand. Consumers must update the legacy package line in their `requirements.txt` to `seller-automation-utils @ git+...` and any imports from the legacy package to `from seller_automation_utils.X import Y`. No public API or behavior changes.
 
 ### Added
 - `config/selectors.json.example` and `config/paths.json.example` — placeholder schemas for the SellerCloud DOM selectors and per-tenant URLs that `sellercloud.request_custom_export` / `download_report` read at runtime. Both real files remain gitignored.
@@ -460,7 +489,7 @@ reaching any repo already on 1.4.2.
 
 ### Packaging
 - Bumped version to `0.7.0`
-- Exported `greeting_for` from the package root: `from fc_utils import greeting_for`
+- Exported `greeting_for` from the package root, so it imports directly from the legacy package.
 
 ---
 
@@ -477,7 +506,7 @@ reaching any repo already on 1.4.2.
 - `request_custom_export(driver, custom_template, sku_list=None, product_group=None)` — drives the SellerCloud Manage Catalog grid through the Export Products wizard, picks a named Custom Export template, and returns the notify-download URL. Validates that exactly one of `sku_list` / `product_group` is supplied (raises `ValueError` otherwise) and enforces SellerCloud's 100-SKU-per-request cap.
 - `download_report(driver, download_url, download_path, output_path, ...)` — polls the notify-download URL, clicks the download button once the report is ready, waits for the resulting `.xlsx` to land in `download_path`, and moves it to `output_path`.
 - Both functions read DOM selectors from `config/selectors.json` and URLs from `config/paths.json` (resolved relative to the entry script, mirroring `accounts.py`). Consumers ship those JSON files in their own repo (gitignored); see the new `config/selectors.json.example` and `config/paths.json.example` for the required schema.
-- Exported from the package root: `from fc_utils import request_custom_export, download_report`.
+- Exported `request_custom_export` and `download_report` from the legacy package's root.
 
 ### Packaging
 - Bumped version to `0.6.0`
@@ -487,13 +516,13 @@ reaching any repo already on 1.4.2.
 ## 0.5.0 — 2026-05-14
 
 ### Improvements
-- Every fc_utils module that emitted progress output via `rich.print` now uses the standard `logging` API: each module declares `log = logging.getLogger(__name__)` at module scope, and all `print()` calls have been converted to the matching `log.info()` / `log.success()` / `log.warning()` / `log.error()` calls. This means:
-  - Consumer scripts see a consistent stream of formatted log lines from fc_utils utilities (Chrome launches, scheduler ticks, Outlook polling, etc.) — same `[INFO]` / `[SUCCESS]` / `[WARNING]` / `[ERROR]` prefixes the formatter produces for application code.
+- Every module of the legacy package that emitted progress output via `rich.print` now uses the standard `logging` API: each module declares `log = logging.getLogger(__name__)` at module scope, and all `print()` calls have been converted to the matching `log.info()` / `log.success()` / `log.warning()` / `log.error()` calls. This means:
+  - Consumer scripts see a consistent stream of formatted log lines from the legacy package's utilities (Chrome launches, scheduler ticks, Outlook polling, etc.) — same `[INFO]` / `[SUCCESS]` / `[WARNING]` / `[ERROR]` prefixes the formatter produces for application code.
   - Library code no longer assumes a writable stdout; when called from a context without a configured logger (tests, REPL), the output is silently dropped instead of attempting to render Rich markup.
-  - The redundant inline `[cyan][INFO][/cyan]` / `[bold red][ERROR][/bold red]` markup was stripped from all 47 fc_utils log call sites (the formatter from v0.4.0 supplies the colored level tag).
+  - The redundant inline `[cyan][INFO][/cyan]` / `[bold red][ERROR][/bold red]` markup was stripped from all 47 log call sites in the legacy package (the formatter from v0.4.0 supplies the colored level tag).
 
 ### Removed
-- `from rich import print` shadowing in every fc_utils module — the logger is now the only output sink.
+- `from rich import print` shadowing in every module of the legacy package — the logger is now the only output sink.
 
 ### Packaging
 - Bumped version to `0.5.0`
@@ -543,7 +572,7 @@ reaching any repo already on 1.4.2.
 ### Packaging
 - Bumped version to `0.3.0`
 - `__init__.py` `__all__` reduced to actually-used symbols
-- Removed `python-dotenv` from `pyproject.toml` dependencies — no fc_utils module imports it after `load_env()` was deleted; consumer scripts continue to depend on it via their own `requirements.txt`
+- Removed `python-dotenv` from `pyproject.toml` dependencies — no module of the legacy package imports it after `load_env()` was deleted; consumer scripts continue to depend on it via their own `requirements.txt`
 
 ---
 

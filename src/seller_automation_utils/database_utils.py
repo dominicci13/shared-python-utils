@@ -18,6 +18,48 @@ _DECIMAL_TYPES = frozenset({pyodbc.SQL_DECIMAL, pyodbc.SQL_NUMERIC})
 _DATETIME_NAMES = frozenset({"date", "datetime", "datetime2", "smalldatetime", "time", "datetimeoffset"})
 
 
+def _unquote_identifier(name: str) -> str:
+    """Return a column name without its T-SQL brackets.
+
+    Strips ONE outer ``[...]`` pair when present and unescapes ``]]`` to ``]``
+    inside it; any other name is returned unchanged. This is the form
+    ``cursor.columns()`` reports, so schema metadata must be looked up by it.
+
+    Args:
+        name (str): Column name, plain (``SKU``) or bracketed (``[SKU]``).
+
+    Returns:
+        str: The bare column name.
+    """
+    if len(name) >= 2 and name.startswith("[") and name.endswith("]"):
+        return name[1:-1].replace("]]", "]")
+    return name
+
+
+def _quote_identifier(name: str) -> str:
+    """Bracket a column name for dynamic T-SQL, idempotently.
+
+    Every name is bracketed, not only "unsafe" ones, so reserved words (``rank``)
+    are covered as well as hyphens, spaces and symbols. Idempotent because some
+    callers already pass bracketed names: ``SKU`` and ``[SKU]`` both give
+    ``[SKU]``, and an embedded ``]`` is escaped as ``]]`` exactly once.
+
+    Args:
+        name (str): Column name, plain or already bracketed.
+
+    Returns:
+        str: The name wrapped in ``[...]`` with inner ``]`` doubled.
+
+    Raises:
+        ValueError: If the name is empty once unbracketed, which T-SQL cannot
+            express as an identifier.
+    """
+    inner = _unquote_identifier(name)
+    if not inner:
+        raise ValueError(f"Empty column identifier: {name!r}")
+    return "[" + inner.replace("]", "]]") + "]"
+
+
 def _binds_as_text(values) -> bool:
     """Whether a column's first non-null value is a string.
 
@@ -51,7 +93,11 @@ def _input_sizes(
     Args:
         cursor (pyodbc.Cursor): Active cursor on the destination database.
         table_name (str): Destination table whose columns are introspected.
-        columns (list[str]): Ordered column names being inserted.
+            Metadata only matches a bare name (``Orders``); a schema-qualified
+            ``dbo.Orders`` matches nothing, so no widths are pinned.
+        columns (list[str]): Ordered column names being inserted, plain or
+            already bracketed. Metadata is matched on the unbracketed form;
+            ``df`` is indexed by the name exactly as passed.
         df (pd.DataFrame | None): Rows about to be inserted. Used only to decide
             whether a temporal column is being fed strings or real date objects;
             without it, temporal columns are left to pyodbc.
@@ -62,7 +108,7 @@ def _input_sizes(
     meta = {r.column_name: r for r in cursor.columns(table=table_name)}
     sizes: list = []
     for col in columns:
-        m = meta.get(col)
+        m = meta.get(_unquote_identifier(col))
         if m is None:
             sizes.append(None)
         elif m.data_type in _STRING_TYPES:
@@ -93,16 +139,23 @@ def insert_dataframe(cursor: pyodbc.Cursor, table_name: str, df: pd.DataFrame, c
         cursor (pyodbc.Cursor): An active pyodbc cursor connected to the target database.
         table_name (str): Name of the destination SQL table.
         df (pd.DataFrame): DataFrame whose rows will be inserted.
-        columns (list[str]): Ordered list of column names to insert.
+        columns (list[str]): Ordered list of column names to insert. Each name is
+            used as-is to select from ``df`` and is bracketed for the INSERT
+            text, so plain names (``your-price``, ``P&L (30 days)``, ``rank``)
+            and already-bracketed ones (``[your-price]``) both work; brackets
+            are never doubled. ``table_name`` is not bracketed, so a
+            schema-qualified ``dbo.Orders`` still builds a valid INSERT, but
+            bind-width pinning only matches a bare name (``Orders``).
 
     Raises:
         RuntimeError: If a row fails to insert.
+        ValueError: If a column name is empty.
     """
     # Opt out of pandas 3.x StringDtype default so None stays None (not NaN),
     # which pyodbc can bind to nullable SQL columns.
     pd.set_option("future.infer_string", False)
 
-    cols = ", ".join(columns)
+    cols = ", ".join(_quote_identifier(c) for c in columns)
     placeholders = ", ".join(["?"] * len(columns))
     query = f"INSERT INTO {table_name} ({cols}) VALUES ({placeholders})"
 
