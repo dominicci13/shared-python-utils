@@ -8,7 +8,7 @@ from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED
 from apscheduler.schedulers.background import BackgroundScheduler
 import logging
 
-from seller_automation_utils import fleet_state
+from seller_automation_utils import fleet_state, instance_guard
 from seller_automation_utils.fleet_state import automation_name
 
 log = logging.getLogger(__name__)
@@ -53,6 +53,13 @@ def run_on_schedule(
     inside a still-running process is externally visible — the one failure mode
     the ``[CRASH]`` email can never report.
 
+    Before any of that it takes the automation's single-instance lock (see
+    :mod:`seller_automation_utils.instance_guard`). Every fleet entry point has
+    normally taken it already in ``ask_user``, so this is a backstop for one
+    that does not prompt. It must come first: the heartbeat file is keyed by
+    name, so a blocked copy that got as far as beating would overwrite the
+    running copy's PID, and its clean-shutdown path would delete that file.
+
     Args:
         func (Callable): The function to call on each scheduled trigger.
         hour (int): Hour of day to run (0–23, local time).
@@ -65,7 +72,11 @@ def run_on_schedule(
 
     Raises:
         ValueError: If hour or minute are out of valid range.
+        SystemExit: With code 0, when another copy of this automation already
+            holds the single-instance lock.
     """
+    instance_guard.ensure_single_instance(name)
+
     scheduler = BackgroundScheduler()
     cron_kwargs: dict = {"hour": hour, "minute": minute}
     if day_of_week is not None:

@@ -15,6 +15,9 @@ from seller_automation_utils import ui_utils
 @pytest.fixture(autouse=True)
 def no_env(monkeypatch):
     monkeypatch.delenv(ui_utils.NO_PROMPT_ENV, raising=False)
+    # The guard itself is covered in test_instance_guard.py; here it must not
+    # take a real mutex for whatever identity the test runner's argv yields.
+    monkeypatch.setattr(ui_utils.instance_guard, "ensure_single_instance", lambda name=None: None)
 
 
 def test_no_prompt_skips_dialog_entirely(monkeypatch):

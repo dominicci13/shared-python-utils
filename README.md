@@ -211,6 +211,24 @@ print(beat["jobs"], beat["last_result"])
 
 Each beat carries every job's live `next_run_time`, so a scheduler thread that died inside a still-running process is externally visible — the one failure `handle_crash` can never report.
 
+### `instance_guard`
+At most one running copy of each automation per host. An orphaned scheduler (its terminal closed, so Ctrl+C cannot reach it) otherwise keeps firing beside a fresh copy, and both drive Chrome on the same profile.
+
+You do not call it: `ask_user` takes the lock as its first action (before the dialog, and whether or not `FC_NO_PROMPT` is set), and `run_on_schedule` takes it again as a backstop. It is idempotent within a process. Call `ensure_single_instance()` yourself only in an entry point that uses neither.
+
+- **Lock:** a Windows named mutex, `Global\seller_automation_utils.single_instance.<name>`. The kernel releases it when the process dies, however it dies, so there is no stale lock to clean up. `Global\` so a copy orphaned in another logon session is still caught. The handle is not inheritable, so a Chrome or driver outliving its Python parent does not hold it.
+- **Name:** `run_demo_report.py` locks as `demo_report` (casefolded). A process not started from a `run_*.py` script, and given no name, is not locked at all (one WARNING), so two unrelated scripts can never block each other.
+- **Blocked copy:** logs one ERROR naming the automation and the holder's PID, then exits with status 0. No crash mail, no heartbeat, nothing written. The PID comes from `%LOCALAPPDATA%\fc-fleet\locks\<name>.json`, which is information only; the holder deletes it on a clean exit. The PID is named only while a live process with that PID and the recorded creation time exists, so a record left by a killed holder never points at an unrelated process that reused the PID; otherwise the message says the holder PID is unknown.
+- **Opt-out:** set `FC_ALLOW_MULTIPLE_INSTANCES=1` (or `true` / `yes`) to run a deliberate second copy. Any other value, including `0` and `false`, leaves the guard on. It logs a WARNING so the guard is never off silently.
+- **Upgrade gotcha:** the guard only sees copies that also run this version or later. A copy started before the upgrade holds no mutex, so a new copy starts beside it unblocked. Before restarting after the upgrade, confirm no old copy is still running (`Get-CimInstance Win32_Process`).
+
+```python
+from seller_automation_utils import ensure_single_instance
+
+ensure_single_instance()                 # name from sys.argv[0]
+ensure_single_instance("my_automation")  # or explicit
+```
+
 ### `outlook`
 Send emails from a configured Outlook account and poll for OTP/verification codes.
 
@@ -222,7 +240,7 @@ code = get_verification_code("me@example.com", sender_contains="amazon", subject
 ```
 
 ### `schedule_utils`
-Run a function on a recurring cron schedule using APScheduler, emitting a `fleet_state` heartbeat on every tick.
+Run a function on a recurring cron schedule using APScheduler, emitting a `fleet_state` heartbeat on every tick. It takes the single-instance lock before anything else (a no-op if `ask_user` already has).
 
 ```python
 from seller_automation_utils import run_on_schedule
@@ -253,6 +271,8 @@ if ask_user("Continue with upload?", title="Confirm"):
 ```
 
 Set `FC_NO_PROMPT=1` to skip the dialog and return False — required for unattended starts, which would otherwise block forever on a message box nobody is looking at.
+
+`ask_user` first takes the single-instance lock (see `instance_guard`), so a second copy of a running automation exits here, before the dialog and before any work.
 
 ---
 

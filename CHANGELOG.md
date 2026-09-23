@@ -1,5 +1,40 @@
 # Changelog
 
+## 1.8.5 — 2026-09-23
+
+### Added
+- **Single-instance guard** (`instance_guard.ensure_single_instance`, also
+  exported from the package). An orphaned scheduler kept firing beside a fresh
+  copy of the same automation and both drove Chrome on one profile, killing each
+  other's session. Each automation now holds a Windows named mutex,
+  `Global\seller_automation_utils.single_instance.<name>`, for its whole life.
+  The kernel releases it when the process dies, so there is no stale lock after
+  a crash or a kill, and the handle is not inheritable, so an orphaned Chrome or
+  driver does not keep it.
+- **No change needed in any automation.** `ask_user` takes the lock as its
+  first action, before the dialog and whether or not `FC_NO_PROMPT` is set, and
+  every entry point calls it first. `run_on_schedule` takes it too, as a
+  backstop; the second call in one process is a no-op.
+- The name comes from the entry script (`run_demo_report.py` locks as
+  `demo_report`), casefolded because Windows paths are case-insensitive and
+  mutex names are not. A process not started from a `run_*.py` script and given
+  no name is not locked (one WARNING), so two unrelated scripts can never block
+  each other.
+- A blocked second copy logs one ERROR naming the automation and the holder's
+  PID and exits with status 0. It sends no crash mail, writes no heartbeat and
+  leaves nothing behind. The PID is read from an information-only record at
+  `%LOCALAPPDATA%\fc-fleet\locks\<name>.json`, which the holder removes on a
+  clean exit. The record carries the holder's process creation time, and the
+  PID is named only while a live process with that PID and creation time
+  exists, so a record left by a killed holder never points at a process that
+  reused the PID.
+- `FC_ALLOW_MULTIPLE_INSTANCES=1` (or `true` / `yes`) turns the guard off for a
+  deliberate second copy, with a WARNING. Any other value, including `0` and
+  `false`, leaves it on.
+- **Upgrade gotcha:** the guard only sees copies that also run this version or
+  later. A copy started before the upgrade holds no mutex and is invisible to
+  it, so confirm no old copy is still running before restarting.
+
 ## 1.8.4 — 2026-09-22
 
 ### Fixed

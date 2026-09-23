@@ -18,12 +18,19 @@ automations write and the ``fleet-control`` dashboard reads:
         crashes\\<name>\\<timestamp>\\crash.json
                                      screenshot.png
                                      dom.txt
+        locks\\<name>.json
 
-``fleet-control`` deliberately reads these files directly rather than importing
-this package: it is a small FastAPI app, and depending on this library would
-drag in selenium, pandas, pyodbc, xlwings and pywin32 to read some JSON. The
-duplicated path logic there is the intended cost of that isolation, so **treat
-the layout above as a published contract** — changing it breaks the dashboard.
+``locks\\<name>.json`` is written by :mod:`seller_automation_utils.instance_guard`
+through this module's ``state_root()``, ``_atomic_write_json`` and ``_now_iso``.
+It is information only (the named mutex is the lock) and the dashboard does not
+read it.
+
+The ``fleet-control`` dashboard deliberately reads these files directly rather
+than importing this package: it is a small FastAPI app, and depending on this
+library would drag in selenium, pandas, pyodbc, xlwings and pywin32 to read some
+JSON. The duplicated path logic there is the intended cost of that isolation, so
+**treat the layout above as a published contract** — changing it breaks the
+dashboard.
 
 Nothing here ever raises. A monitoring side-channel that can kill the
 automation it monitors is worse than no monitoring at all, so every function

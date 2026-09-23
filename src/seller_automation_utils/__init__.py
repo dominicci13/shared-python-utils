@@ -55,6 +55,7 @@ from seller_automation_utils.fleet_state import (
     snapshot_jobs,
 )
 from seller_automation_utils.greeting import greeting_for
+from seller_automation_utils.instance_guard import ensure_single_instance
 from seller_automation_utils.logging_utils import setup_logging
 from seller_automation_utils.outlook import get_account, get_verification_code, send_email
 from seller_automation_utils.schedule_utils import run_on_schedule
@@ -118,6 +119,8 @@ __all__ = [
     "snapshot_jobs",
     # greeting
     "greeting_for",
+    # instance_guard
+    "ensure_single_instance",
     # logging_utils
     "setup_logging",
     # outlook

@@ -2,6 +2,8 @@ import ctypes
 import logging
 import os
 
+from seller_automation_utils import instance_guard
+
 log = logging.getLogger(__name__)
 # Windows MessageBox button and icon constants
 _MB_YESNO = 0x04
@@ -29,6 +31,12 @@ def ask_user(message: str, title: str = "Script") -> bool:
     launched by the ``fleet-control`` supervisor would block forever on a
     dialog box nobody is looking at, while appearing to be running.
 
+    Because this is the first call every entry point makes, it also takes the
+    automation's single-instance lock (see :mod:`instance_guard`) before
+    anything else, with or without ``FC_NO_PROMPT``. A second copy of an
+    automation that is already running therefore exits here, before the
+    dialog and before any work.
+
     Args:
         message (str): The message text displayed in the dialog body.
         title (str): The dialog window title. Defaults to "Script".
@@ -36,7 +44,13 @@ def ask_user(message: str, title: str = "Script") -> bool:
     Returns:
         bool: True if the user clicked Yes, False if they clicked No or if
             ``FC_NO_PROMPT`` is set.
+
+    Raises:
+        SystemExit: With code 0, when another copy of this automation already
+            holds the single-instance lock.
     """
+    instance_guard.ensure_single_instance()
+
     if os.environ.get(NO_PROMPT_ENV):
         log.info(f"[cyan]{title}[/cyan]: {NO_PROMPT_ENV} set, skipping the run-now prompt.")
         return False
