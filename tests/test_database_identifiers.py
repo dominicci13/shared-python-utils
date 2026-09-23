@@ -75,12 +75,15 @@ def test_unquote_identifier(name, expected):
 class FakeColumn:
     """Mimics one row of `pyodbc.Cursor.columns()`, which reports bare names."""
 
-    def __init__(self, column_name, data_type, column_size=None, decimal_digits=None, type_name=""):
+    def __init__(self, column_name, data_type, column_size=None, decimal_digits=None, type_name="",
+                 table_name="Orders", table_schem="dbo"):
         self.column_name = column_name
         self.data_type = data_type
         self.column_size = column_size
         self.decimal_digits = decimal_digits
         self.type_name = type_name
+        self.table_name = table_name
+        self.table_schem = table_schem
 
 
 class FakeConnection:
@@ -113,9 +116,9 @@ class FakeCursor:
         self.executemany_calls: list[tuple[str, list]] = []
         self.execute_calls: list[tuple[str, tuple]] = []
 
-    def columns(self, table: str):
-        # `table` is ignored, so the real driver's failure to match a
-        # schema-qualified name (no widths pinned) is not exercised here.
+    def columns(self, table=None, catalog=None, schema=None, column=None):
+        # Every row is returned; `_input_sizes` filters them to the asked table.
+        # Table matching itself is covered in test_database_input_sizes.py.
         return self.connection.schema
 
     def setinputsizes(self, sizes) -> None:
@@ -126,8 +129,17 @@ class FakeCursor:
             raise pyodbc.Error("bulk bind refused")
         self.executemany_calls.append((query, list(rows)))
 
-    def execute(self, query: str, values: tuple) -> None:
+    def execute(self, query: str, values: tuple = ()) -> FakeCursor:
+        # No transaction open, so no savepoint: that path is covered in
+        # test_database_transaction.py, and these tests stay about identifiers.
+        if query == "SELECT @@TRANCOUNT":
+            self._result = (0,)
+            return self
         self.execute_calls.append((query, values))
+        return self
+
+    def fetchone(self):
+        return self._result
 
     def close(self) -> None:
         pass
@@ -223,7 +235,7 @@ class SchemaOnlyCursor:
     def __init__(self, columns: list[FakeColumn]) -> None:
         self._columns = columns
 
-    def columns(self, table: str):
+    def columns(self, table=None, catalog=None, schema=None, column=None):
         return self._columns
 
 
@@ -231,7 +243,7 @@ class SchemaOnlyCursor:
 def test_input_sizes_pins_plain_and_bracketed_names_alike(name):
     """Regression: before 1.8.3 a bracketed name never matched `cursor.columns()` and got None."""
     cur = SchemaOnlyCursor([FakeColumn("product-name", pyodbc.SQL_WVARCHAR, column_size=500)])
-    assert _input_sizes(cur, "T", [name]) == [(pyodbc.SQL_WVARCHAR, 500, 0)]
+    assert _input_sizes(cur, "Orders", [name]) == [(pyodbc.SQL_WVARCHAR, 500, 0)]
 
 
 def test_input_sizes_sniffs_temporal_df_column_by_name_as_passed():
@@ -240,9 +252,9 @@ def test_input_sizes_sniffs_temporal_df_column_by_name_as_passed():
         [FakeColumn("report-date", pyodbc.SQL_TYPE_TIMESTAMP, type_name="date")]
     )
     df = pd.DataFrame({"[report-date]": ["2026-09-22"]})
-    assert _input_sizes(cur, "T", ["[report-date]"], df) == [(pyodbc.SQL_WVARCHAR, 40, 0)]
+    assert _input_sizes(cur, "Orders", ["[report-date]"], df) == [(pyodbc.SQL_WVARCHAR, 40, 0)]
 
 
 def test_input_sizes_still_none_for_a_column_absent_from_the_schema():
     cur = SchemaOnlyCursor([FakeColumn("SKU", pyodbc.SQL_VARCHAR, column_size=64)])
-    assert _input_sizes(cur, "T", ["[NotAColumn]"]) == [None]
+    assert _input_sizes(cur, "Orders", ["[NotAColumn]"]) == [None]

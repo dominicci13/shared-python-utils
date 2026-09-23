@@ -18,7 +18,9 @@ import html
 import logging
 import os
 import re
+import time
 import xml.etree.ElementTree as ET
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -49,6 +51,19 @@ WINDOW_LOOKBACK_DAYS = 1
 # A runaway page loop would burn the app's daily call budget for every other eBay
 # automation sharing this keyset. No account is near this.
 _MAX_PAGES = 400
+
+# eBay returns these as Ack=Failure over HTTP 200, and its own LongMessage says
+# "Please try again later". ebay-items-categories met 10007 three times
+# (GetMyeBaySelling 2026-09-05, GetSellerList 2026-09-09 and 2026-09-21) and each
+# cleared on a rerun minutes later. Every other code is treated as permanent: a
+# bad token, a malformed request or a spent call limit fails identically on
+# every retry, so retrying only burns quota.
+TRANSIENT_TRADING_ERROR_CODES = frozenset({"10007"})
+
+# One pause per retry, so len + 1 attempts per call (per page for the sweep).
+# Short on purpose: long enough to ride out an eBay-side blip, short enough that
+# a persistent fault still fails the run within seconds instead of minutes.
+TRADING_RETRY_DELAYS: tuple[float, ...] = (5.0, 15.0)
 
 
 OAUTH_TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token"
@@ -500,6 +515,30 @@ def _as_utc(value: str | None) -> datetime | None:
             return None
 
 
+def _error_fields(root: ET.Element) -> tuple[list[str], list[str]]:
+    """Read a Trading response's ``Errors`` elements for display and for retry.
+
+    Pure. Tags must already be stripped of their namespace.
+
+    Args:
+        root: The parsed response root.
+
+    Returns:
+        ``(errors, error_codes)``. ``errors`` carries every ``Errors`` element
+        as ``"code: message"``; ``error_codes`` carries only the codes whose
+        ``SeverityCode`` is not ``Warning`` (absent counts as an error), since a
+        warning riding along on a failure is not what failed it.
+    """
+    elements = root.findall(".//Errors")
+    errors = [f"{e.findtext('ErrorCode')}: {e.findtext('LongMessage')}" for e in elements]
+    error_codes = [
+        (e.findtext("ErrorCode") or "").strip()
+        for e in elements
+        if (e.findtext("SeverityCode") or "").strip() != "Warning"
+    ]
+    return errors, error_codes
+
+
 def _iso_z(moment: datetime) -> str:
     """Format an aware datetime the way the Trading API expects it."""
     return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
@@ -582,11 +621,15 @@ def parse_seller_list(xml: bytes | str) -> dict:
         xml: The raw response body.
 
     Returns:
-        ``{"ack": str, "errors": list[str], "total_entries": int,
-        "total_pages": int, "items": list[dict]}``, where each item carries
-        ``item_number``, ``title``, ``sku``, ``current_price``,
-        ``sold_quantity``, ``watchers``, ``start_time`` (aware UTC),
-        ``category_path``, ``category`` (rolled up) and ``listing_status``.
+        ``{"ack": str, "errors": list[str], "error_codes": list[str],
+        "total_entries": int, "total_pages": int, "items": list[dict]}``.
+        ``errors`` carries every ``Errors`` element as ``"code: message"``;
+        ``error_codes`` carries only the codes whose ``SeverityCode`` is not
+        ``Warning`` (absent counts as an error), since a warning riding along on
+        a failure is not what failed it. Each item carries ``item_number``,
+        ``title``, ``sku``, ``current_price``, ``sold_quantity``, ``watchers``,
+        ``start_time`` (aware UTC), ``category_path``, ``category`` (rolled up)
+        and ``listing_status``.
     """
     if isinstance(xml, str):
         xml = xml.encode("utf-8")
@@ -594,10 +637,7 @@ def parse_seller_list(xml: bytes | str) -> dict:
     for el in root.iter():
         el.tag = el.tag.split("}")[-1]
 
-    errors = [
-        f"{e.findtext('ErrorCode')}: {e.findtext('LongMessage')}"
-        for e in root.findall(".//Errors")
-    ]
+    errors, error_codes = _error_fields(root)
 
     pagination = root.find(".//PaginationResult")
     items: list[dict] = []
@@ -619,6 +659,7 @@ def parse_seller_list(xml: bytes | str) -> dict:
     return {
         "ack": root.findtext("Ack") or "",
         "errors": errors,
+        "error_codes": error_codes,
         "total_entries": _as_int(pagination.findtext("TotalNumberOfEntries") if pagination is not None else None),
         "total_pages": _as_int(pagination.findtext("TotalNumberOfPages") if pagination is not None else None),
         "items": items,
@@ -660,9 +701,11 @@ def parse_item(xml: bytes | str) -> dict:
         xml: The raw response body.
 
     Returns:
-        ``{"ack", "errors", "item"}`` where ``item`` carries ``item_number``,
-        ``title``, ``sku``, ``current_price``, ``quantity``, ``quantity_sold``,
-        ``quantity_available`` and ``listing_status``, or None when absent.
+        ``{"ack", "errors", "error_codes", "item"}`` with ``errors`` and
+        ``error_codes`` as :func:`parse_seller_list` describes them. ``item``
+        carries ``item_number``, ``title``, ``sku``, ``current_price``,
+        ``quantity``, ``quantity_sold``, ``quantity_available`` and
+        ``listing_status``, or is None when absent.
     """
     if isinstance(xml, str):
         xml = xml.encode("utf-8")
@@ -670,10 +713,7 @@ def parse_item(xml: bytes | str) -> dict:
     for el in root.iter():
         el.tag = el.tag.split("}")[-1]
 
-    errors = [
-        f"{e.findtext('ErrorCode')}: {e.findtext('LongMessage')}"
-        for e in root.findall(".//Errors")
-    ]
+    errors, error_codes = _error_fields(root)
     element = root.find(".//Item")
     item = None
     if element is not None:
@@ -690,25 +730,56 @@ def parse_item(xml: bytes | str) -> dict:
             "listing_status": _text(element, "SellingStatus/ListingStatus"),
         }
 
-    return {"ack": root.findtext("Ack") or "", "errors": errors, "item": item}
+    return {"ack": root.findtext("Ack") or "", "errors": errors, "error_codes": error_codes,
+            "item": item}
 
 
-def get_item(token: str, item_id: str) -> dict:
+def get_item(
+    token: str,
+    item_id: str,
+    *,
+    account: str | None = None,
+    sleep: Callable[[float], None] | None = None,
+) -> dict:
     """Fetch one listing's details.
+
+    Retried exactly as :func:`count_active_listings` is: up to 3 attempts, 5s
+    then 15s (:data:`TRADING_RETRY_DELAYS`), only on eBay 10007, HTTP 5xx or a
+    connection, timeout or dropped-body error. Any other eBay error code and
+    every 4xx raise on the first attempt. Each retry logs a WARNING naming the
+    item, the account and the cause, and the earlier causes ride on the final
+    exception as a note (Python 3.11+).
 
     Args:
         token: The seller account's Trading API user token.
         item_id: The listing's eBay item number.
+        account: Account display name for the retry warnings. Optional so
+            existing callers keep working; without it the warnings cannot say
+            which account failed.
+        sleep: Pause between attempts, defaulting to :func:`time.sleep`.
+            Injectable so tests do not wait.
 
     Returns:
         The item dict described by :func:`parse_item`.
 
     Raises:
-        RuntimeError: eBay returned a failure ack, or no item in the response.
+        RuntimeError: eBay returned a non-transient failure ack, or a transient
+            one on every attempt (``"GetItem failed for <item_id>: [...]"``,
+            unchanged from before retries existed), or a success ack with no
+            item in the response, which is not retried.
+        requests.RequestException: A non-transient transport failure (any 4xx)
+            on the first attempt, or a transient one on every attempt.
     """
-    result = parse_item(_post("GetItem", build_get_item_xml(token, item_id)))
-    if result["ack"] not in ("Success", "Warning"):
-        raise RuntimeError(f"GetItem failed for {item_id}: {result['errors'] or result['ack']}")
+    result = _call_with_retry(
+        "GetItem",
+        build_get_item_xml(token, item_id),
+        parse_item,
+        account or "an unnamed account",
+        # Resolved per call, not bound as a default, so a monkeypatched
+        # time.sleep is honoured.
+        sleep or time.sleep,
+        item_id=item_id,
+    )
     if result["item"] is None:
         raise RuntimeError(f"GetItem returned no item for {item_id}.")
     return result["item"]
@@ -747,7 +818,9 @@ def parse_active_count(xml: bytes | str) -> dict:
         xml: The raw response body.
 
     Returns:
-        ``{"ack": str, "errors": list[str], "total_entries": int}``.
+        ``{"ack": str, "errors": list[str], "error_codes": list[str],
+        "total_entries": int}``, with ``errors`` and ``error_codes`` as
+        :func:`parse_seller_list` describes them.
     """
     if isinstance(xml, str):
         xml = xml.encode("utf-8")
@@ -755,25 +828,29 @@ def parse_active_count(xml: bytes | str) -> dict:
     for el in root.iter():
         el.tag = el.tag.split("}")[-1]
 
+    errors, error_codes = _error_fields(root)
     active = root.find(".//ActiveList")
     pagination = active.find("PaginationResult") if active is not None else None
     return {
         "ack": root.findtext("Ack") or "",
-        "errors": [
-            f"{e.findtext('ErrorCode')}: {e.findtext('LongMessage')}"
-            for e in root.findall(".//Errors")
-        ],
+        "errors": errors,
+        "error_codes": error_codes,
         "total_entries": _as_int(pagination.findtext("TotalNumberOfEntries") if pagination is not None else None),
     }
 
 
 def _post(call_name: str, body: str, timeout: int = 180, attempts: int = 3) -> bytes:
-    """POST one Trading call, retrying only transport failures.
+    """POST one Trading call, retrying only transient transport failures.
 
-    A sweep is dozens of sequential calls, so a single dropped connection must
-    not lose the account. An eBay-level failure (a Failure ``Ack``) is not
-    retried here — the caller reads the ack and decides, because retrying a
-    rejected request just repeats it.
+    Retried, back to back: whatever :func:`is_transient_transport_error`
+    accepts (connection, timeout, dropped body, HTTP 5xx). Everything else,
+    every 4xx included, raises on the first attempt, because the same request
+    fails the same way again. An eBay-level failure (a Failure ``Ack`` over
+    HTTP 200) is not seen here at all — the caller reads the ack and decides.
+
+    Every Trading call in this module goes through :func:`_call_with_retry`,
+    which passes ``attempts=1`` so the two layers do not multiply. The default
+    of 3 applies only to a direct call.
 
     Args:
         call_name: Trading call name for the header.
@@ -785,7 +862,8 @@ def _post(call_name: str, body: str, timeout: int = 180, attempts: int = 3) -> b
         The raw response body.
 
     Raises:
-        requests.RequestException: Every attempt failed at the transport level.
+        requests.RequestException: A non-transient failure on any attempt, or a
+            transient one on every attempt.
     """
     headers = trading_headers(call_name)
     payload = body.encode("utf-8")
@@ -794,31 +872,194 @@ def _post(call_name: str, body: str, timeout: int = 180, attempts: int = 3) -> b
             response = requests.post(TRADING_ENDPOINT, data=payload, headers=headers, timeout=timeout)
             response.raise_for_status()
             return response.content
-        except requests.RequestException:
-            if attempt == attempts:
+        except requests.RequestException as exc:
+            if attempt == attempts or not is_transient_transport_error(exc):
                 raise
-            log.warning(f"{call_name} transport error (attempt #{attempt}/{attempts}). Retrying.")
+            log.warning(f"{call_name} transport error (attempt {attempt}/{attempts}): "
+                        f"{type(exc).__name__}: {exc}. Retrying.")
     raise AssertionError("unreachable")
 
 
-def count_active_listings(token: str) -> int:
+def is_transient_trading_failure(error_codes: list[str]) -> bool:
+    """Decide whether a failed Trading response is worth sending again unchanged.
+
+    Pure. Transient only when there is at least one error code and **every** one
+    is in :data:`TRANSIENT_TRADING_ERROR_CODES`: a response carrying 10007
+    alongside, say, an invalid-token error will fail the same way next time.
+
+    Args:
+        error_codes: Error-severity codes from the response, as
+            :func:`parse_seller_list` returns them in ``error_codes``.
+
+    Returns:
+        True when a retry can plausibly succeed.
+    """
+    return bool(error_codes) and all(code in TRANSIENT_TRADING_ERROR_CODES for code in error_codes)
+
+
+def is_transient_transport_error(exc: requests.RequestException) -> bool:
+    """Decide whether a failed HTTP exchange is worth sending again unchanged.
+
+    Pure. Transient: an HTTP 5xx, and a connection, timeout or dropped-body
+    failure — each a fault in eBay or the network rather than in the request.
+    Everything else is permanent, including **every 4xx**: 401/403 is a
+    credential eBay will reject again, 400/404 is a malformed request, and 429
+    on this keyset means a spent call budget that no short pause refills.
+
+    Args:
+        exc: The exception :func:`_post` raised.
+
+    Returns:
+        True when a retry can plausibly succeed.
+    """
+    if isinstance(exc, requests.HTTPError):
+        return exc.response is not None and exc.response.status_code >= 500
+    return isinstance(exc, (requests.ConnectionError, requests.Timeout,
+                            requests.exceptions.ChunkedEncodingError))
+
+
+def _call_with_retry(
+    call_name: str,
+    body: str,
+    parse: Callable[[bytes], dict],
+    account: str,
+    sleep: Callable[[float], None],
+    page: int | None = None,
+    *,
+    item_id: str | None = None,
+) -> dict:
+    """Send one Trading call, retrying that call alone on a transient failure.
+
+    For the sweep this retries one page, not the account: one eBay blip on page
+    22 of 27 used to throw away the 21 pages already fetched. This is the only
+    retry layer for the calls routed through it — :func:`_post` is called with
+    a single attempt so the two do not multiply.
+
+    Up to ``len(TRADING_RETRY_DELAYS) + 1`` attempts, pausing per
+    :data:`TRADING_RETRY_DELAYS`, and only when :func:`is_transient_trading_failure`
+    or :func:`is_transient_transport_error` says so. Each retry logs a WARNING
+    naming the call, page (if any), account, attempt and cause.
+
+    Args:
+        call_name: Trading call name, e.g. ``GetSellerList``.
+        body: The XML request body, sent unchanged on every attempt.
+        parse: Turns the raw response into a dict carrying ``ack``, ``errors``
+            and ``error_codes``, as :func:`parse_seller_list`,
+            :func:`parse_active_count` and :func:`parse_item` do.
+        account: Label for the retry warnings; never the token.
+        sleep: Pause between attempts, injectable so tests do not wait.
+        page: 1-based page number for a paged call, named in every message;
+            None for a single-shot call.
+        item_id: Listing a per-item call is about, named in every message;
+            None otherwise. Never combined with ``page``.
+
+    Returns:
+        The parsed response, with a ``Success`` or ``Warning`` ack.
+
+    Raises:
+        ValueError: Both ``page`` and ``item_id`` were given.
+        RuntimeError: eBay returned a failure ack that is not transient, or a
+            transient one on every attempt. The message is the one each caller
+            raised before retries existed: ``"<call> failed on page N: [...]"``,
+            ``"<call> failed for <item_id>: [...]"`` or ``"<call> failed: [...]"``.
+        requests.RequestException: A transport failure that is not transient,
+            or a transient one on every attempt.
+    """
+    if page is not None and item_id is not None:
+        raise ValueError(f"{call_name}: pass page or item_id, not both.")
+    if page is not None:
+        subject, failed = f"{call_name} page {page}", f"{call_name} failed on page {page}"
+    elif item_id is not None:
+        subject, failed = f"{call_name} item {item_id}", f"{call_name} failed for {item_id}"
+    else:
+        subject, failed = call_name, f"{call_name} failed"
+    attempts = len(TRADING_RETRY_DELAYS) + 1
+    earlier: list[str] = []
+    for attempt in range(1, attempts + 1):
+        try:
+            result = parse(_post(call_name, body, attempts=1))
+        except requests.RequestException as exc:
+            if attempt == attempts or not is_transient_transport_error(exc):
+                _note_earlier_attempts(exc, earlier, subject, account)
+                raise
+            cause = f"{type(exc).__name__}: {exc}"
+        else:
+            if result["ack"] in ("Success", "Warning"):
+                return result
+            if attempt == attempts or not is_transient_trading_failure(result["error_codes"]):
+                failure = RuntimeError(f"{failed}: {result['errors'] or result['ack']}")
+                _note_earlier_attempts(failure, earlier, subject, account)
+                raise failure
+            cause = "; ".join(result["errors"])
+
+        delay = TRADING_RETRY_DELAYS[attempt - 1]
+        earlier.append(f"attempt {attempt}/{attempts}: {cause}")
+        log.warning(f"{subject} for {account} failed transiently "
+                    f"(attempt {attempt}/{attempts}): {cause}. Retrying in {delay:g}s.")
+        sleep(delay)
+    raise AssertionError("unreachable")
+
+
+def _note_earlier_attempts(exc: BaseException, earlier: list[str], subject: str, account: str) -> None:
+    """Attach the causes of a call's earlier attempts to the exception that ends it.
+
+    The crash mail carries the traceback but not the log, so without this only
+    the last attempt's cause reaches it. A note leaves the exception's type and
+    message untouched, which is what callers match on. Notes need Python 3.11;
+    on 3.10 the WARNING log lines are the only record.
+
+    Args:
+        exc: The exception about to be raised.
+        earlier: One line per failed earlier attempt, oldest first.
+        subject: The call, and page if any, e.g. ``GetSellerList page 3``.
+        account: Account label, never the token.
+    """
+    if earlier and hasattr(exc, "add_note"):
+        exc.add_note(f"{subject} for {account} failed on earlier attempts: " + " | ".join(earlier))
+
+
+def count_active_listings(
+    token: str,
+    *,
+    account: str | None = None,
+    sleep: Callable[[float], None] | None = None,
+) -> int:
     """Ask eBay how many active listings an account has.
 
     A single call, independent of the GetSellerList sweep, so the two can be
-    compared as a completeness check.
+    compared as a completeness check. Retried exactly as one sweep page is (see
+    :func:`get_active_listings`): up to 3 attempts, 5s then 15s, only on eBay
+    10007, HTTP 5xx or a connection, timeout or dropped-body error, with a
+    WARNING per retry and the earlier causes attached to the final exception as
+    a note (Python 3.11+).
 
     Args:
         token: The seller account's Trading API user token.
+        account: Account display name for the retry warnings. Optional so
+            existing callers keep working; without it the warnings cannot say
+            which account failed.
+        sleep: Pause between attempts, defaulting to :func:`time.sleep`.
+            Injectable so tests do not wait.
 
     Returns:
         The active-listing count.
 
     Raises:
-        RuntimeError: eBay returned a failure ack.
+        RuntimeError: eBay returned a non-transient failure ack, or a transient
+            one on every attempt. Type and message are unchanged from before
+            retries existed.
+        requests.RequestException: A non-transient transport failure, or a
+            transient one on every attempt.
     """
-    result = parse_active_count(_post("GetMyeBaySelling", build_active_count_xml(token)))
-    if result["ack"] not in ("Success", "Warning"):
-        raise RuntimeError(f"GetMyeBaySelling failed: {result['errors'] or result['ack']}")
+    result = _call_with_retry(
+        "GetMyeBaySelling",
+        build_active_count_xml(token),
+        parse_active_count,
+        account or "an unnamed account",
+        # Resolved per call, not bound as a default, so a monkeypatched
+        # time.sleep is honoured.
+        sleep or time.sleep,
+    )
     return result["total_entries"]
 
 
@@ -826,6 +1067,9 @@ def get_active_listings(
     token: str,
     now: datetime | None = None,
     per_page: int = MAX_ENTRIES_PER_PAGE,
+    *,
+    account: str | None = None,
+    sleep: Callable[[float], None] | None = None,
 ) -> list[dict]:
     """Fetch every active listing for one seller account.
 
@@ -835,22 +1079,46 @@ def get_active_listings(
     so the first page is dense with listings that ended earlier the same day
     (22 of 200 when measured), and inserting them would quietly pad the report.
 
+    Each page is retried on its own, up to ``len(TRADING_RETRY_DELAYS) + 1``
+    attempts (3) with the pauses in :data:`TRADING_RETRY_DELAYS` (5s, then 15s), and
+    only on a transient failure: eBay error 10007, HTTP 5xx, or a connection,
+    timeout or dropped-body error. An auth error, any other eBay error code and
+    any 4xx raise on the first attempt. Every retry logs a WARNING naming the
+    account, page, attempt and cause, and when the page finally fails those
+    causes are also attached to the exception as a note (Python 3.11+), so the
+    crash mail's traceback carries every attempt, not only the last. Pages
+    already fetched are kept, and the retried page lands in its own place, so
+    order is unchanged.
+
     Args:
         token: The seller account's Trading API user token.
         now: Reference time, defaulting to the current UTC time. Injectable so
             the window can be pinned in tests.
         per_page: Entries per page; clamped to :data:`MAX_ENTRIES_PER_PAGE`.
+        account: Account display name for the retry warnings. Optional so
+            existing callers keep working; without it the warnings cannot say
+            which account failed.
+        sleep: Pause between attempts, defaulting to :func:`time.sleep`.
+            Injectable so tests do not wait.
 
     Returns:
         One dict per active listing, in the order eBay returned them.
 
     Raises:
-        RuntimeError: eBay returned a failure ack, or the page count exceeded
-            :data:`_MAX_PAGES`.
+        RuntimeError: eBay returned a non-transient failure ack, or a transient
+            one on every attempt for the same page, or the page count exceeded
+            :data:`_MAX_PAGES`. The type and message are unchanged from before
+            retries existed; earlier attempts ride along only as a note.
+        requests.RequestException: A non-transient transport failure, or a
+            transient one on every attempt for the same page.
     """
     now = now or datetime.now(timezone.utc)
     end_from = now - timedelta(days=WINDOW_LOOKBACK_DAYS)
     end_to = now + timedelta(days=WINDOW_FORWARD_DAYS)
+    label = account or "an unnamed account"
+    # Resolved per call, not bound as a default, so a monkeypatched time.sleep
+    # is honoured.
+    pause = sleep or time.sleep
 
     listings: list[dict] = []
     dropped = 0
@@ -861,9 +1129,7 @@ def get_active_listings(
             raise RuntimeError(f"GetSellerList exceeded {_MAX_PAGES} pages — refusing to keep paging.")
 
         body = build_get_seller_list_xml(token, page, end_from, end_to, per_page)
-        result = parse_seller_list(_post("GetSellerList", body))
-        if result["ack"] not in ("Success", "Warning"):
-            raise RuntimeError(f"GetSellerList failed on page {page}: {result['errors'] or result['ack']}")
+        result = _call_with_retry("GetSellerList", body, parse_seller_list, label, pause, page=page)
 
         total_pages = result["total_pages"] or 1
         active = [i for i in result["items"] if i["listing_status"] == "Active"]

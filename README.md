@@ -91,15 +91,26 @@ kill_app("chrome")
 ### `database_utils`
 Bulk DataFrame inserts for SQL Server via pyodbc `fast_executemany` (~3-8× the old
 per-row loop on 2,000-row batches; up to ~23× measured on one large load). Bind widths are pinned from the live table schema, so long strings
-do not truncate; a driver error rolls back and replays row-by-row to name the
-offending row. Requires the **ODBC Driver 17** connection from `sql_connection`.
+do not truncate. Requires the **ODBC Driver 17** connection from `sql_connection`.
+
+It commits once, together with any uncommitted statement the caller ran first on
+the same connection, so `DELETE ... WHERE ReportDate = ?` followed by
+`insert_dataframe` replaces the day's rows atomically. On a driver error only the
+bulk attempt is undone, back to a savepoint, so that DELETE survives; the rows are
+then replayed one by one. All rows good: one commit, as the bulk path would have
+made. A bad row: everything rolls back, the caller's DELETE included, and the
+error names the row. If the savepoint cannot be restored, everything rolls back
+and it raises without replaying, so a failure never leaves duplicates.
 
 Column names are bracketed in the INSERT text (since 1.8.3), so hyphens, spaces,
 symbols and reserved words (`your-price`, `P&L (30 days)`, `rank`) need no
 caller-side quoting. Already-bracketed names (`[your-price]`) are accepted and never
 double-bracketed. Each name is also the DataFrame key exactly as passed. The table
-name is used verbatim. Pass a bare table name (`Orders`); a schema-qualified name
-still inserts but pins no widths.
+name is used verbatim in the INSERT, and `Orders`, `dbo.Orders`, `[dbo].[Orders]`
+and `Reports.dbo.Orders` all get their widths pinned: the schema is passed to the
+metadata lookup on its own, `_`/`%` in it are escaped, and the result is filtered
+to the exact table. A malformed or four-part name raises `ValueError` before
+anything is written.
 
 ```python
 from seller_automation_utils import insert_dataframe
@@ -138,6 +149,8 @@ Credentials come from the environment and are shared with `ebay-best-offers`: on
 Each listing carries `item_number`, `title`, `sku`, `current_price`, `sold_quantity`, `watchers`, `start_time` (aware UTC), `category_path`, `category` (top level, `/` normalized to `-`) and `listing_status`.
 
 Two behaviours worth knowing. `GetSellerList` selects by end time, not status, and orders results by end time ascending — so the first page is dense with listings that ended earlier the same day, and `get_active_listings` filters them out. And `GetMyeBaySelling` is deliberately not used for listing data: its items carry no category and no sold quantity. It appears only in `count_active_listings`, as an independent second opinion a sweep can check itself against.
+
+Retries are narrow on purpose. `get_active_listings` retries each page on its own, and `count_active_listings` and `get_item` each retry their one call: up to 3 attempts, 5s then 15s (`TRADING_RETRY_DELAYS`), and only on eBay `10007` or a transport-transient failure (HTTP 5xx, connection, timeout, dropped body). Anything else, every 4xx included, raises on the first attempt, because it fails the same way again. Pass `account=` to any of the three so each retry's WARNING names the account (`get_item`'s also names the item id). The HTTP layer underneath makes a single attempt, so a failure costs 3 requests, never 3 x 3.
 
 Build and parse are pure functions kept apart from the HTTP call, so both are testable without a network.
 

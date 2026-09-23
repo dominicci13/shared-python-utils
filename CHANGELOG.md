@@ -1,5 +1,105 @@
 # Changelog
 
+## 1.8.4 — 2026-09-22
+
+### Fixed
+- `get_active_listings` retries a single failed `GetSellerList` **page** instead
+  of losing the whole account's sweep. One transient eBay `10007: System error`
+  on page 22 of 27 (2026-09-21) threw away the 21 pages already fetched and
+  crashed the run; a rerun minutes later succeeded. A page now gets up to 3
+  attempts, pausing 5s then 15s (`TRADING_RETRY_DELAYS`), and only on a transient
+  failure: eBay error `10007` (`TRANSIENT_TRADING_ERROR_CODES`), HTTP 5xx, or a
+  connection, timeout or dropped-body error. Pages already fetched are kept and
+  page order is unchanged.
+- `count_active_listings` gets the same retry (same classification, 3 attempts,
+  5s then 15s). Its `GetMyeBaySelling` call crashed `ebay-items-categories` on
+  2026-09-05 at 00:00:31 with `10007: System error`; that is now retried.
+- `get_item` gets the same retry too (same classification, 3 attempts, 5s then
+  15s). Before, it retried transport failures 3 times back to back with no
+  pause and raised on the first `10007`. Its caller, `ebay-best-offers`, reads
+  every listing with a pending offer in turn, so one eBay blip on any of them
+  failed that read.
+- Every retry logs a WARNING naming the call, the account, the page (sweep
+  only) or the item id (`get_item` only), the attempt and the cause. When the call finally fails, those earlier
+  causes are also attached to the raised exception with `add_note` (Python
+  3.11+; the log alone on 3.10), because the crash mail carries the traceback
+  and not the log. Without that, only the last attempt's cause would reach the
+  mail.
+- `insert_dataframe` no longer turns a failed bulk insert into duplicate rows.
+  The fallback ran a full `rollback()`, which also undid the caller's
+  uncommitted `DELETE` on the same connection, and the row-by-row replay then
+  committed: a same-day rerun appended a second copy of the day's rows (a
+  full-table `DELETE` caller got the whole table twice). It now marks
+  `SAVE TRANSACTION sau_insert_dataframe` before the bulk insert and, on a driver
+  error, rolls back to that savepoint only, checks `XACT_STATE()` is 1, and
+  replays. A bad row in the replay still rolls back everything (the caller's
+  `DELETE` too, so the table is as it was) and names the row. If the savepoint
+  cannot be restored, or the transaction is no longer committable (doomed, or
+  already rolled back by the error), it rolls back everything and raises
+  `RuntimeError` without replaying. A non-driver exception during the bulk
+  attempt is undone the same way and re-raised unchanged, without a replay
+  (before, it left any partial batch in the open transaction). With no
+  transaction open on entry
+  (`@@TRANCOUNT` 0, e.g. the caller committed its `DELETE` first), nothing
+  earlier is at risk and the old full rollback is kept. Callers with an
+  uncommitted `DELETE` before the insert: `amzn-ca-fba-inventory`,
+  `amzn-catalog-health` (All Items), `amzn-top-sales`, `ebay-best-offers` (aged
+  table) and `sellercloud-sync`. Verified on a live SQL Server (ODBC Driver 17) with a forced
+  bulk failure: 2 rows kept, where 1.8.3 left 4.
+- `insert_dataframe` pins bind widths for a schema-qualified table name.
+  `_input_sizes` passed `dbo.Orders` to `cursor.columns(table=)` as a literal
+  table name, which matched nothing, so no widths were pinned. The name is now
+  split into catalog, schema and table (bracketed parts such as `[dbo].[Orders]`
+  and dots inside brackets handled), the schema is passed as `schema=`, `_` and
+  `%` in the schema and table are escaped with the driver's
+  `SQL_SEARCH_PATTERN_ESCAPE` character, and the returned metadata is filtered
+  to the exact table and schema (case-insensitively), so a driver that reports
+  no escape character still cannot mix in a sibling table's columns. A bare
+  name is still not narrowed to a schema.
+
+### Changed
+- Permanent failures now raise on the **first** attempt: any other eBay error
+  code (bad token, invalid request, call limit) or a failure ack that also
+  carries a non-transient error, on a `GetSellerList` page, on
+  `GetMyeBaySelling` and on `GetItem`; and **every** HTTP 4xx including 429, on
+  every Trading call. Before, `_post` retried any `RequestException`, 4xx
+  included, three times back to back, for `GetSellerList`, `GetMyeBaySelling`
+  and `GetItem`.
+- `_post` now retries only transport-transient failures (connection, timeout,
+  dropped body, HTTP 5xx), still back to back. The sweep, the count and
+  `get_item` all call it with `attempts=1` and retry on their own, so a failure
+  costs 3 HTTP requests, never 3 x 3.
+- When every attempt fails, the exception is the same as before: `RuntimeError`
+  with the unchanged `GetSellerList failed on page N: [...]`,
+  `GetMyeBaySelling failed: [...]` or `GetItem failed for <item_id>: [...]`
+  message, or the `requests` exception from the last attempt. A `GetItem`
+  success with no item still raises `GetItem returned no item for <item_id>.`
+  and is not retried. Only the note is new; `str(exc)` and the type are what
+  they were, so callers matching on either are unaffected.
+- New keyword-only arguments on `get_active_listings`, `count_active_listings`
+  and `get_item`: `account` (a label for the retry warnings; without it they
+  say "an unnamed account") and `sleep` (injectable pause, defaulting to
+  `time.sleep`). Both optional, so existing calls such as
+  `get_item(token, item_id)` are unaffected.
+- `parse_seller_list`, `parse_active_count` and `parse_item` also return `error_codes`: the
+  codes of every error that is not `SeverityCode` `Warning`, which is what the
+  retry classifies on.
+- New pure helpers in `ebay_api` (not re-exported from the package root):
+  `is_transient_trading_failure(error_codes)` and
+  `is_transient_transport_error(exc)`.
+- `insert_dataframe` raises `ValueError` before anything is sent to the database
+  for a malformed table name (an unbalanced bracket, an empty table part) or a
+  four-part linked-server name. Such an INSERT failed anyway, except the
+  four-part one, which no caller uses. The same `ValueError` refuses an
+  unbracketed part that is not a T-SQL regular identifier (a space, `;`, `--`,
+  parentheses), since the name is interpolated into the INSERT verbatim; bracket
+  such a name (`[Order Lines]`).
+- `insert_dataframe` now runs `SELECT @@TRANCOUNT` (and, with a transaction
+  open, `SAVE TRANSACTION`) before every non-empty insert. If that probe fails,
+  it rolls back the whole transaction and re-raises the `pyodbc.Error`.
+
+Suite 287 -> 501 (the 5 exception-note cases skip on Python 3.10).
+
 ## 1.8.3 — 2026-09-22
 
 ### Fixed

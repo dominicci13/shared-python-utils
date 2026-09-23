@@ -7,24 +7,32 @@ branch is covered against a fake cursor rather than a live database.
 """
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 
 import pandas as pd
 import pyodbc
 import pytest
 
-from seller_automation_utils.database_utils import _input_sizes
+from seller_automation_utils.database_utils import _escape_pattern, _input_sizes, _split_table_name
 
 
 class FakeColumn:
-    """Mimics one row of `pyodbc.Cursor.columns()`."""
+    """Mimics one row of `pyodbc.Cursor.columns()`.
 
-    def __init__(self, column_name, data_type, column_size=None, decimal_digits=None, type_name=""):
+    `table_name` left None is filled with whichever table was asked for, so these
+    tests stay about widths; table matching is covered at the end of this file.
+    """
+
+    def __init__(self, column_name, data_type, column_size=None, decimal_digits=None, type_name="",
+                 table_name=None, table_schem="dbo"):
         self.column_name = column_name
         self.data_type = data_type
         self.column_size = column_size
         self.decimal_digits = decimal_digits
         self.type_name = type_name
+        self.table_name = table_name
+        self.table_schem = table_schem
 
 
 class FakeCursor:
@@ -32,8 +40,11 @@ class FakeCursor:
         self._columns = columns
         self.asked_table: str | None = None
 
-    def columns(self, table: str):
+    def columns(self, table=None, catalog=None, schema=None, column=None):
         self.asked_table = table
+        for c in self._columns:
+            if c.table_name is None:
+                c.table_name = table
         return self._columns
 
 
@@ -185,3 +196,168 @@ def test_introspects_the_named_table():
 
 def test_empty_column_list_returns_empty():
     assert sizes_for([FakeColumn("SKU", pyodbc.SQL_VARCHAR, column_size=8)], names=[]) == []
+
+
+# --- table-name resolution --------------------------------------------------
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("Orders", (None, None, "Orders")),
+        ("dbo.Orders", (None, "dbo", "Orders")),
+        ("[dbo].[Orders]", (None, "dbo", "Orders")),
+        ("[dbo].Orders", (None, "dbo", "Orders")),
+        ("dbo.[Order Lines]", (None, "dbo", "Order Lines")),
+        ("[Order.Lines]", (None, None, "Order.Lines")),
+        ("[a]]b]", (None, None, "a]b")),
+        ("Reports.dbo.Orders", ("Reports", "dbo", "Orders")),
+        ("Reports..Orders", ("Reports", None, "Orders")),
+        (" dbo . Orders ", (None, "dbo", "Orders")),
+        ("[dbo] . [Orders]", (None, "dbo", "Orders")),
+        ("Order_Lines", (None, None, "Order_Lines")),
+    ],
+)
+def test_split_table_name(name, expected):
+    assert _split_table_name(name) == expected
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["", "   ", "dbo.", "[]", "[dbo.Orders", "dbo.Ord]ers", "dbo.Ord[ers", "[dbo]x.Orders",
+     "Srv.Reports.dbo.Orders"],
+)
+def test_split_table_name_refuses_a_malformed_name(name):
+    with pytest.raises(ValueError, match="(?i)table name"):
+        _split_table_name(name)
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["Orders (a) VALUES (1); DROP TABLE Orders; --", "Orders;", "Or ders", "Orders--", "dbo.Orders;"],
+)
+def test_split_table_name_refuses_an_unbracketed_non_identifier(name):
+    """The name reaches the INSERT text verbatim, so it must not be able to extend the statement."""
+    with pytest.raises(ValueError, match="not a regular identifier"):
+        _split_table_name(name)
+
+
+@pytest.mark.parametrize(
+    ("value", "escape", "expected"),
+    [
+        ("Orders", "\\", "Orders"),
+        ("Order_Lines", "\\", "Order\\_Lines"),
+        ("Pct%Off", "\\", "Pct\\%Off"),
+        ("Back\\slash_x", "\\", "Back\\\\slash\\_x"),
+        ("Order_Lines", None, "Order_Lines"),
+    ],
+)
+def test_escape_pattern(value, escape, expected):
+    assert _escape_pattern(value, escape) == expected
+
+
+def odbc_pattern(pattern: str, escape: str | None) -> re.Pattern:
+    """Compile an ODBC catalog search pattern the way the driver matches it (case-insensitive)."""
+    out, i = [], 0
+    while i < len(pattern):
+        ch = pattern[i]
+        if escape and ch == escape and i + 1 < len(pattern):
+            out.append(re.escape(pattern[i + 1]))
+            i += 2
+            continue
+        out.append(".*" if ch == "%" else "." if ch == "_" else re.escape(ch))
+        i += 1
+    return re.compile("".join(out) + r"\Z", re.IGNORECASE)
+
+
+# `_` would match any character without escaping, so each underscored name has a
+# sibling it must not be confused with.
+CATALOG = {
+    ("dbo", "Returns"): [("SKU", 10)],
+    ("dbo", "Order_Lines"): [("SKU", 20)],
+    ("dbo", "OrderXLines"): [("SKU", 99), ("Extra", 50)],
+    ("sales_eu", "Orders"): [("SKU", 30)],
+    ("salesXeu", "Orders"): [("SKU", 88)],
+}
+
+
+class CatalogConnection:
+    def __init__(self, escape) -> None:
+        self.escape = escape
+
+    def getinfo(self, info_type):
+        assert info_type == pyodbc.SQL_SEARCH_PATTERN_ESCAPE
+        if isinstance(self.escape, Exception):
+            raise self.escape
+        return self.escape
+
+
+class CatalogCursor:
+    """A cursor over `CATALOG` that honours ODBC pattern semantics, wildcards included."""
+
+    def __init__(self, escape="\\") -> None:
+        self.connection = CatalogConnection(escape)
+        self.asked: dict | None = None
+
+    def columns(self, table=None, catalog=None, schema=None, column=None):
+        self.asked = {"table": table, "schema": schema, "catalog": catalog}
+        esc = self.connection.escape if isinstance(self.connection.escape, str) and self.connection.escape else None
+        table_re = odbc_pattern(table, esc)
+        schema_re = odbc_pattern(schema, esc) if schema is not None else None
+        return [
+            FakeColumn(col, pyodbc.SQL_WVARCHAR, column_size=size, table_name=t, table_schem=s)
+            for (s, t), cols in CATALOG.items()
+            if table_re.match(t) and (schema_re is None or schema_re.match(s))
+            for col, size in cols
+        ]
+
+
+def width(size: int) -> tuple:
+    return (pyodbc.SQL_WVARCHAR, size, 0)
+
+
+@pytest.mark.parametrize(
+    ("table_name", "asked"),
+    [
+        ("Returns", {"table": "Returns", "schema": None, "catalog": None}),
+        ("dbo.Returns", {"table": "Returns", "schema": "dbo", "catalog": None}),
+        ("[dbo].[Returns]", {"table": "Returns", "schema": "dbo", "catalog": None}),
+        ("Reports.dbo.Returns", {"table": "Returns", "schema": "dbo", "catalog": "Reports"}),
+        ("dbo.returns", {"table": "returns", "schema": "dbo", "catalog": None}),
+    ],
+)
+def test_schema_qualified_and_bracketed_names_pin_widths(table_name, asked):
+    """Regression: `dbo.Returns` used to reach `cursor.columns()` as a literal table name and pin nothing."""
+    cur = CatalogCursor()
+    assert _input_sizes(cur, table_name, ["SKU"]) == [width(10)]
+    assert cur.asked == asked
+
+
+@pytest.mark.parametrize("escape", ["\\", pyodbc.Error("getinfo not supported"), "", None])
+def test_underscore_table_never_takes_a_sibling_tables_widths(escape):
+    """With or without an escape character, `Order_Lines` must not read `OrderXLines`."""
+    cur = CatalogCursor(escape)
+    assert _input_sizes(cur, "dbo.Order_Lines", ["SKU", "Extra"]) == [width(20), None]
+
+
+def test_underscore_table_is_escaped_when_the_driver_reports_an_escape():
+    cur = CatalogCursor("\\")
+    _input_sizes(cur, "[dbo].[Order_Lines]", ["SKU"])
+    assert cur.asked["table"] == "Order\\_Lines"
+
+
+@pytest.mark.parametrize("escape", ["\\", pyodbc.Error("getinfo not supported")])
+def test_underscore_schema_never_takes_a_sibling_schemas_widths(escape):
+    cur = CatalogCursor(escape)
+    assert _input_sizes(cur, "sales_eu.Orders", ["SKU"]) == [width(30)]
+
+
+def test_underscore_schema_is_escaped_but_catalog_is_not():
+    """SQLColumns treats the catalog as an ordinary argument, so escaping it would break the match."""
+    cur = CatalogCursor("\\")
+    _input_sizes(cur, "Some_Db.sales_eu.Orders", ["SKU"])
+    assert cur.asked == {"table": "Orders", "schema": "sales\\_eu", "catalog": "Some_Db"}
+
+
+def test_no_widths_for_a_table_in_another_schema():
+    """`dbo.Orders` does not exist in CATALOG; the `sales_eu`/`salesXeu` tables must not stand in for it."""
+    assert _input_sizes(CatalogCursor(), "dbo.Orders", ["SKU"]) == [None]
