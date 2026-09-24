@@ -12,6 +12,8 @@ import xlwings as xw
 import logging
 from rich.markup import escape
 
+from seller_automation_utils import _winproc
+
 log = logging.getLogger(__name__)
 
 # A save can hit a OneDrive sharing violation that clears within seconds. It is retried
@@ -25,6 +27,41 @@ _EXCEL_GONE_HRESULTS = frozenset({
     -2147023174,  # RPC_S_SERVER_UNAVAILABLE (0x800706BA)
     -2147023170,  # RPC_S_CALL_FAILED (0x800706BE)
 })
+
+
+# Excel instances this process started through the helpers below, as pid -> creation time.
+# COM-launched Excel is not a child of Python, so this is the only way the crash handler can
+# tell this automation's own Excel from everyone else's. An entry is dropped once its Excel
+# has gone; it stays only when teardown failed to end it.
+_started_excel: dict[int, int] = {}
+
+
+def _track_excel(pid: int) -> None:
+    created = _winproc.creation_time(pid)
+    if created is not None:
+        _started_excel[pid] = created
+
+
+def _untrack_if_gone(pid: int) -> None:
+    created = _started_excel.get(pid)
+    if created is not None and _winproc.creation_time(pid) != created:
+        _started_excel.pop(pid, None)  # the crash handler may have dropped it already
+
+
+def started_excel() -> list[tuple[int, int]]:
+    """``(pid, creation time)`` of Excel instances this process started that are still alive."""
+    alive = []
+    for pid, created in list(_started_excel.items()):
+        if _winproc.creation_time(pid) == created:
+            alive.append((pid, created))
+        else:
+            _started_excel.pop(pid, None)
+    return alive
+
+
+def started_excel_pids() -> list[int]:
+    """Pids of Excel instances this process started that are still the same live process."""
+    return [pid for pid, _ in started_excel()]
 
 
 class WorkbookRefreshError(RuntimeError):
@@ -116,12 +153,15 @@ def _refresh_once(
     name = Path(workbook_path).name
     log.info(f"Opening workbook: [cyan]{escape(name)}[/cyan]")
     verdict: WorkbookRefreshError | None = None
+    started: int | None = None
 
     try:
         # add_book=False: the xlwings default adds an empty, pathless workbook, and Quit then
         # has something to prompt about on a hidden Excel.
         with xw.App(visible=False, add_book=False) as excel:
-            pids.append(excel.pid)
+            started = excel.pid
+            pids.append(started)
+            _track_excel(started)
 
             excel.display_alerts = False
             excel.screen_updating = False
@@ -153,6 +193,9 @@ def _refresh_once(
         if verdict is not None:
             raise verdict from exc
         raise
+    finally:
+        if started is not None:
+            _untrack_if_gone(started)
 
     if verdict is not None:
         raise verdict
@@ -305,17 +348,24 @@ def run_macro(workbook_path: str, macro_name: str) -> None:
     """
     log.info(f"Running macro [cyan]{macro_name}[/cyan] in [cyan]{Path(workbook_path).name}[/cyan]")
 
-    with xw.App(visible=False) as excel:
-        excel.display_alerts = False
-        excel.screen_updating = False
+    started: int | None = None
+    try:
+        with xw.App(visible=False) as excel:
+            started = excel.pid
+            _track_excel(started)
+            excel.display_alerts = False
+            excel.screen_updating = False
 
-        wb = excel.books.open(workbook_path)
-        wb.macro(macro_name)()
-        wb.save()
-        wb.close()
+            wb = excel.books.open(workbook_path)
+            wb.macro(macro_name)()
+            wb.save()
+            wb.close()
 
-        excel.display_alerts = True
-        excel.screen_updating = True
+            excel.display_alerts = True
+            excel.screen_updating = True
+    finally:
+        if started is not None:
+            _untrack_if_gone(started)
 
     log.success(f"Macro [cyan]{macro_name}[/cyan] completed successfully.")
 
@@ -338,17 +388,24 @@ def paste_image_to_sheet(workbook_path: str, sheet: str | int, cell: str, image_
     """
     log.info(f"Inserting image into [cyan]{Path(workbook_path).name}[/cyan] at {cell}.")
 
-    with xw.App(visible=False) as excel:
-        excel.display_alerts = False
-        excel.screen_updating = False
+    started: int | None = None
+    try:
+        with xw.App(visible=False) as excel:
+            started = excel.pid
+            _track_excel(started)
+            excel.display_alerts = False
+            excel.screen_updating = False
 
-        wb = excel.books.open(workbook_path)
-        ws = wb.sheets[sheet]
-        ws.pictures.add(image_path, left=ws.range(cell).left, top=ws.range(cell).top)
-        wb.save()
-        wb.close()
+            wb = excel.books.open(workbook_path)
+            ws = wb.sheets[sheet]
+            ws.pictures.add(image_path, left=ws.range(cell).left, top=ws.range(cell).top)
+            wb.save()
+            wb.close()
 
-        excel.display_alerts = True
-        excel.screen_updating = True
+            excel.display_alerts = True
+            excel.screen_updating = True
+    finally:
+        if started is not None:
+            _untrack_if_gone(started)
 
     log.success(f"Image inserted at [cyan]{cell}[/cyan] successfully.")

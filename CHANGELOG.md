@@ -1,5 +1,84 @@
 # Changelog
 
+## 1.8.8 — 2026-09-23
+
+### Fixed
+- **`alert_utils.handle_crash` kills only what the crashing automation
+  started.** It used to `taskkill /im` every Excel, Chrome and ChromeDriver on
+  the machine. One automation's crash therefore also killed any other
+  automation running at the time, and closed the user's own Chrome. Twice in
+  September a second automation failed about 5 minutes after another crashed,
+  with `InvalidSessionIdException: ... the browser has closed the connection`.
+  - SeleniumBase starts the browser driver (`uc_driver.exe` in UC mode,
+    `chromedriver.exe` otherwise) as a direct child of the automation's Python
+    process. In UC mode Chrome is a direct child too; otherwise it is the
+    driver's child. Each direct child is killed with its descendants.
+  - Windows records a parent pid once and never re-checks it, so a process
+    whose real parent exited (for example the user's Chrome after "Relaunch
+    to update") looks like a child of whichever later process got that pid.
+    Every link is therefore checked:
+    - a direct child must be younger than the crashing process;
+    - each descendant must be no older than its own parent.
+  - `taskkill /t` is not used, because it walks recorded parent pids with no
+    such check. The tree is walked in Python from one process snapshot.
+  - Every kill goes through an open process handle whose creation time is
+    checked first, leaves first. Windows cannot reuse a pid while a handle to
+    it is open, so nothing can take a checked pid's place before the kill.
+  - A failure inside the cleanup is logged and never breaks `handle_crash`.
+    The archive and the email are already done by then.
+  - Excel launched through COM is not a child of Python. `excel_utils` now
+    records the Excel instances its own helpers start (`refresh_workbook`,
+    `run_macro`, `paste_image_to_sheet`) by pid and creation time, and drops
+    each record once that Excel has gone. The crash cleanup kills only
+    recorded instances that are still the same process, the same
+    handle-verified way.
+  - In normal use no Excel is left for it to kill: every helper tears Excel
+    down in `App.__exit__`.
+- `custom_functions.kill_app` is unchanged. Callers that still use it keep
+  their machine-wide behaviour until they are changed. So does
+  `chrome.start_browser`, which calls `kill_app("chrome")` after a failed
+  launch; that trade-off (a shared profile held by another Chrome) is left
+  as it is for now.
+- Not a regression, but worth knowing: in non-UC mode, if a browser's driver
+  died before the crash, its Chrome is no longer a child of the automation.
+  It is now left running rather than caught by the old machine-wide kill.
+- Excel that a caller opens itself with `xlwings.App`, rather than through
+  `excel_utils`, is no longer killed by `handle_crash`. Quit it in the
+  caller's own `finally` (or a `with` block).
+
+### Added
+- `seller_automation_utils._winproc` (internal; pywin32 and ctypes only, no
+  new dependency):
+  - a Toolhelp32 process snapshot;
+  - a verified descendant walk that rejects stale parent-pid links;
+  - process creation time;
+  - `terminate(pid, created)`, which kills through one handle only if the
+    creation time still matches.
+- `excel_utils.started_excel()` returns `(pid, creation time)` pairs, and
+  `excel_utils.started_excel_pids()` returns just the pids.
+- 14 new tests, including one against real processes: a child with a
+  differently named grandchild, both found by the walk and killed by handle,
+  and a kill with a wrong creation time that must do nothing. All 15 guards
+  are mutation-checked:
+  - the machine-wide kill;
+  - the executable filter;
+  - the handle's identity check;
+  - the root age check, its strict boundary, and the unknown-own-age case;
+  - the descendant age check and its boundary;
+  - the leaves-first order, the descendant kill, and binding each kill to the
+    creation time that was checked;
+  - the Excel kill and the cleanup guard;
+  - the recycled-pid check and untracking.
+  - Tracking in `refresh_workbook`, `run_macro` and `paste_image_to_sheet` is
+    also pinned. The tests stub out `kill_app`, so a mutation can never kill
+    real processes on the test machine.
+- Verified live with real browsers and Excel. A crashing process with its own
+  UC browser and its own tracked Excel ran the cleanup while another process
+  held its own browser and Excel open. The crasher's whole Chrome tree,
+  `uc_driver` and Excel were killed (15 handle-verified kills, none refused,
+  none left), and the other process's browser and Excel stayed alive
+  throughout the cleanup.
+
 ## 1.8.7 — 2026-09-23
 
 ### Fixed

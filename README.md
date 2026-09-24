@@ -49,7 +49,7 @@ from seller_automation_utils import AMAZON_ACCOUNT_NAMES, EBAY_PROFILES, amazon_
 `accounts.sellercloud(driver, username, password, site="Delta")` raises `RuntimeError` unless it ends positively signed in: on the tenant's own host, not on the login page, and with a logout link on the page. It allows 10s to find the login form or a signed-in page, and 30s after submitting (1.8.6+). Don't wrap it in a bare `except`: that turns a failed login into a run that scrapes login pages.
 
 ### `alert_utils`
-Capture browser screenshots, the live DOM (main document plus every iframe), and tab URLs on crash, archive all of it to disk, send a crash report via Outlook, and clean up automation processes. The archive is written *before* the email is attempted, so a broken Outlook no longer loses the traceback.
+Capture browser screenshots, the live DOM (main document plus every iframe), and tab URLs on crash, archive all of it to disk, send a crash report via Outlook, and clean up automation processes. The archive is written *before* the email is attempted, so a broken Outlook no longer loses the traceback. `handle_crash`'s cleanup kills only what the crashing automation started (1.8.8+): the Chrome and driver trees that are children of its own process (and younger than it), and the Excel instances it opened through `excel_utils`. It leaves other automations' Chrome and Excel, and your own, alone. `custom_functions.kill_app` still kills every instance of an app by design; don't call it from an automation that shares the machine.
 
 ```python
 import traceback

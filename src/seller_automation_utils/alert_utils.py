@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 from datetime import datetime
-from seller_automation_utils import fleet_state, outlook, custom_functions
+from seller_automation_utils import _winproc, excel_utils, fleet_state, outlook
 from seller_automation_utils.config_utils import get_env
 import logging
 
@@ -158,7 +158,9 @@ def handle_crash(driver: object | None, error_traceback: str, automation_name: s
     Takes a screenshot of the current browser window, saves the live DOM (main
     document plus every iframe) to a text file, collects all open tab URLs,
     **archives all of it to disk**, sends a detailed crash report via Outlook,
-    then forcefully kills Excel, Chrome, and ChromeDriver processes.
+    then force-kills the Chrome, driver and Excel processes **this automation** started
+    (1.8.8+; see ``_kill_own_processes``). Other automations' processes, and the user's own
+    Chrome and Excel, are left alone.
 
     The archive is written *before* the email is attempted, and the screenshot
     and DOM are moved into it rather than deleted. The email goes out over
@@ -256,8 +258,54 @@ def handle_crash(driver: object | None, error_traceback: str, automation_name: s
         # needs to run.
         log.error("Crash email failed — the crash is archived on disk regardless.")
 
-    log.info("Killing automation processes.")
-    for process in ["excel", "chrome", "chromedriver"]:
-        custom_functions.kill_app(process)
+    try:
+        _kill_own_processes()
+    except Exception:
+        # The archive and the email are already done; never let cleanup be what fails here.
+        log.exception("Cleaning up this automation's processes failed.")
 
     log.success("Crash handling complete.")
+
+
+# Browser-side executables a fleet automation starts itself. SeleniumBase launches its driver
+# (uc_driver in UC mode, chromedriver otherwise) as a direct child of Python; in UC mode Chrome is
+# a direct child too, otherwise Chrome is the driver's child and is reached by the tree walk.
+_OWN_BROWSER_EXES = frozenset({"chrome.exe", "chromedriver.exe", "uc_driver.exe"})
+
+
+def _kill_own_processes() -> None:
+    """Kill the Chrome/driver trees and Excel instances this process started, and nothing else.
+
+    It used to ``taskkill /im`` every Excel, Chrome and ChromeDriver on the machine. So one
+    automation's crash also killed any other automation running at the time: on 2026-09-09 and
+    2026-09-14 a second automation failed minutes after another crashed, with "invalid session
+    id: the browser has closed the connection". It also closed the user's own Chrome.
+
+    The browser-side processes this process started are its direct children, each killed with
+    its verified descendants. COM-launched Excel is not a child of Python, so only the
+    instances this process started through ``excel_utils`` are killed. Every kill goes through
+    a handle checked to be the same process (pid + creation time).
+    """
+    log.info("Killing this automation's own browser and Excel processes.")
+    me = os.getpid()
+    my_birth = _winproc.creation_time(me)
+    if my_birth is not None:
+        table = _winproc.process_table()
+        for pid, ppid, exe in table:
+            if ppid != me or pid == me or exe.lower() not in _OWN_BROWSER_EXES:
+                continue
+            born = _winproc.creation_time(pid)
+            # Windows records a parent pid once and never re-checks it. A process whose real
+            # parent exited (e.g. the user's Chrome after "Relaunch to update") looks like our
+            # child if Windows later gave us that pid. A real child is younger than us.
+            if born is None or born <= my_birth:
+                continue
+            # Not `taskkill /t`: it walks descendants by recorded parent pid alone, so a stale
+            # branch anywhere under our Chrome would be killed. Each descendant is kept only if
+            # it is younger than its parent. Each kill goes through a handle verified to be the
+            # same process (pid + creation time), leaves first.
+            for child, child_exe, child_born in reversed(_winproc.verified_descendants(pid, table)):
+                _winproc.terminate(child, child_born, f"({child_exe})")
+            _winproc.terminate(pid, born, f"({exe})")
+    for pid, created in excel_utils.started_excel():
+        _winproc.terminate(pid, created, "(EXCEL.EXE)")
