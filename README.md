@@ -46,6 +46,8 @@ from seller_automation_utils import AMAZON_ACCOUNT_NAMES, EBAY_PROFILES, amazon_
 
 `accounts.ebay(password, driver, username=None)` handles both of eBay's sign-in layouts: password-only when the profile still knows the user, and the two-step username-then-password form when it does not. Set `eBay_user` in `.env` so the two-step path can complete unattended. A captcha splash raises a `RuntimeError` rather than a timeout — sign in by hand in that Chrome profile when it fires, since retrying automatically makes it worse.
 
+`accounts.sellercloud(driver, username, password, site="Delta")` raises `RuntimeError` unless it ends positively signed in: on the tenant's own host, not on the login page, and with a logout link on the page. It allows 10s to find the login form or a signed-in page, and 30s after submitting (1.8.6+). Don't wrap it in a bare `except`: that turns a failed login into a run that scrapes login pages.
+
 ### `alert_utils`
 Capture browser screenshots, the live DOM (main document plus every iframe), and tab URLs on crash, archive all of it to disk, send a crash report via Outlook, and clean up automation processes. The archive is written *before* the email is attempted, so a broken Outlook no longer loses the traceback.
 

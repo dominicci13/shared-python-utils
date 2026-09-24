@@ -3,10 +3,15 @@ from __future__ import annotations
 import sys
 from collections.abc import Iterator
 from pathlib import Path
+from urllib.parse import urlparse
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
+from selenium.common.exceptions import (
+    NoSuchElementException,
+    StaleElementReferenceException,
+    TimeoutException,
+)
 from selenium.webdriver.support import expected_conditions as EC
 from seller_automation_utils import outlook
 from seller_automation_utils.config_utils import get_env, load_config_safe
@@ -55,35 +60,128 @@ def iter_amazon_accounts() -> Iterator[tuple[str, str, str]]:
     for key, url in AMAZON_URLS.items():
         yield key, AMAZON_ACCOUNT_NAMES[key], url
 
+SELLERCLOUD_LOGIN_PATH = "/account/login.aspx"
+# Present on every signed-in page (home and inner pages alike), absent from the login page.
+# Measured against the live tenant on 2026-09-23.
+SELLERCLOUD_SIGNED_IN = (By.CSS_SELECTOR, "a[href*='logout.aspx' i]")
+
+
+def _sellercloud_page(driver: object, host: str) -> str:
+    """Classify the current page as ``"form"``, ``"signed_in"`` or ``""`` (neither).
+
+    Host and scheme are checked first, so credentials are only ever typed into
+    the tenant's own https login form. ``"signed_in"`` needs positive proof:
+    https, the tenant's own host, a path that is not the login page, and the
+    logout link. A blank page, a browser error page, or another host is neither,
+    and the caller raises. So does any page on our host without the logout link.
+    Whether a password-expiry or 2FA page carries that link has not been
+    measured.
+    """
+    url = urlparse(driver.current_url)
+    if url.scheme != "https" or (url.hostname or "").lower() != host:
+        return ""
+    if driver.find_elements(By.ID, "NewFormBody_deltaUsername"):
+        return "form"
+    if url.path.lower() != SELLERCLOUD_LOGIN_PATH and driver.find_elements(*SELLERCLOUD_SIGNED_IN):
+        return "signed_in"
+    return ""
+
+
+def _sellercloud_where(driver: object) -> str:
+    """The current URL for error messages: no userinfo, query string or fragment."""
+    url = urlparse(driver.current_url)
+    if not url.hostname:
+        return url.scheme or "unknown"
+    port = f":{url.port}" if url.port else ""
+    return f"{url.scheme}://{url.hostname}{port}{url.path}"
+
+
+# A page mid-navigation can throw these from `find_elements` / `current_url`. Inside
+# the waits they mean "not yet", not "failed". A closed window stays fatal.
+_SELLERCLOUD_WAIT_IGNORES = (NoSuchElementException, StaleElementReferenceException)
+
+
 ##################################################################################################################################################
 def sellercloud(driver: object, username: str, password: str, site: str = "Delta") -> None:
     """Log in to SellerCloud (Delta or Alpha).
+
+    Delta, measured against the live tenant on 2026-09-23: an unauthenticated
+    profile lands on ``/account/login.aspx`` with the form showing, and every
+    signed-in page carries a ``logout.aspx`` link. The login used to be assumed
+    rather than checked, so a failed one returned normally. Every SellerCloud
+    page then redirected to the login page and the run collected nothing.
+
+    Delta now returns only with positive proof of being signed in: https, the
+    host of ``SELLERCLOUD_DELTA_URL``, a path other than the login page, and the
+    logout link. Anything else raises: a blank or error page, another host, a
+    rejected password, or any page on our host without the logout link.
+    Credentials are typed only into the tenant's own https login form. Whether a
+    password-expiry or 2FA page carries the logout link has not been measured.
+    If one does, it would pass as signed in.
 
     Args:
         driver (object): Active SeleniumBase WebDriver instance.
         username (str): SellerCloud login email.
         password (str): SellerCloud login password.
         site (str): SellerCloud environment — "Delta" or "Alpha". Defaults to "Delta".
+
+    Raises:
+        RuntimeError: Delta only. The tenant showed neither its login form nor a
+            signed-in page, or the browser is not signed in 30s after submitting.
+            Messages carry the URL without its query string, never credentials.
     """
     log.info("Logging into [cyan]SellerCloud[/cyan].")
 
     if site == "Delta":
         url = get_env("SELLERCLOUD_DELTA_URL", required=True)
+        host = (urlparse(url).hostname or "").lower()
         driver.get(url)
 
         try:
-            UserBox = WebDriverWait(driver, 5).until(EC.presence_of_element_located((
-                By.ID,
-                "NewFormBody_deltaUsername"
-            )))
-            UserBox.send_keys(username)
+            page = WebDriverWait(driver, 10, ignored_exceptions=_SELLERCLOUD_WAIT_IGNORES).until(
+                lambda d: _sellercloud_page(d, host)
+            )
+        except TimeoutException as exc:
+            raise RuntimeError(
+                "SellerCloud showed neither its login form nor a signed-in page. "
+                f"Current page: {_sellercloud_where(driver)}"
+            ) from exc
 
-            PasswordBox = driver.find_element(By.ID, "NewFormBody_deltaPass")
-            PasswordBox.send_keys(password)
+        if page == "signed_in":
+            log.info("SellerCloud session still active — no sign-in needed.")
+            return
 
-            driver.find_element(By.CLASS_NAME, "wizard-btn-container").click()
-        except TimeoutException:
-            pass
+        # Re-check right before typing: a redirect after the wait must not receive the credentials.
+        user_fields = driver.find_elements(By.ID, "NewFormBody_deltaUsername")
+        if not user_fields or _sellercloud_page(driver, host) != "form":
+            raise RuntimeError(
+                "SellerCloud's login page changed before sign-in could start. "
+                f"Current page: {_sellercloud_where(driver)}"
+            )
+        user_fields[0].send_keys(username)
+        password_box = driver.find_element(By.ID, "NewFormBody_deltaPass")
+        password_box.send_keys(password)
+
+        # The submit button sits inside `.wizard-btn-container`. Enter on the
+        # password field is the fallback, so a renamed class doesn't break login.
+        submit = driver.find_elements(By.CSS_SELECTOR, ".wizard-btn-container button[type=submit]")
+        if submit:
+            submit[0].click()
+        else:
+            password_box.send_keys(Keys.ENTER)
+
+        try:
+            WebDriverWait(driver, 30, ignored_exceptions=_SELLERCLOUD_WAIT_IGNORES).until(
+                lambda d: _sellercloud_page(d, host) == "signed_in"
+            )
+        except TimeoutException as exc:
+            raise RuntimeError(
+                "SellerCloud login did not go through: not signed in 30s after submitting. "
+                f"Current page: {_sellercloud_where(driver)}. Check the SellerCloud username "
+                "and password passed in, or sign this Chrome profile in by hand."
+            ) from exc
+
+        log.success("Logged in to [cyan]SellerCloud[/cyan] successfully.")
 
     elif site == "Alpha":
         url = get_env("SELLERCLOUD_ALPHA_URL", required=True)

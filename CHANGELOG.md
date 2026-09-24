@@ -1,5 +1,48 @@
 # Changelog
 
+## 1.8.6 — 2026-09-23
+
+### Fixed
+- **`accounts.sellercloud` (Delta) now returns only with positive proof of
+  being signed in.** It used to type the credentials, click, and return without
+  checking. A timeout waiting for the form was also read as "already signed
+  in". A failed login therefore looked like a working one: every SellerCloud
+  page redirected to the login page, and the run collected nothing without
+  raising.
+- "Signed in" now means all of: https, the host of `SELLERCLOUD_DELTA_URL`, a
+  path other than `/account/login.aspx`, and a `logout.aspx` link on the page.
+  Merely leaving the login page is **not** enough. An error page,
+  `about:blank`, another host, or any page on our host without the logout link
+  all fail the check.
+- ⚠️ Not measured: whether a password-expiry or 2FA page carries the logout
+  link. If one does, it would pass as signed in.
+- Credentials are typed only into the tenant's own https login form. Host and
+  scheme are checked before the form, and checked again just before typing, so
+  a redirect in between gets nothing.
+- Transient `NoSuchElementException` / `StaleElementReferenceException` while
+  the page navigates are ignored inside the waits. A closed window is still
+  fatal.
+- It waits up to 10s for either the login form or a signed-in page. A live
+  session returns at once with an INFO line. Anything else raises
+  `RuntimeError`.
+- After submitting it waits up to 30s to be signed in, and raises
+  `RuntimeError` if not.
+- Error messages carry the URL without userinfo, query string or fragment, and
+  never the username or password.
+- It submits through the button inside `.wizard-btn-container`, and falls back
+  to Enter on the password field if that button is missing, so a renamed class
+  cannot break the login.
+- Measured against the live tenant on 2026-09-23:
+  - An unauthenticated profile lands on `/account/login.aspx` with the form.
+  - Every signed-in page (home `/` and inner pages) carries the logout link.
+  - The new code was then run live on both paths: a full login (about 3s,
+    lands on `/`), and a second call on the same browser, which returned
+    "session still active" (about 1.5s).
+- `site="Alpha"` is unchanged.
+- **Callers that wrapped the call in a bare `except` and logged "SellerCloud
+  logged in already" must drop that `except`**, or they will swallow the new
+  error. Callers without one need no change.
+
 ## 1.8.5 — 2026-09-23
 
 ### Added
