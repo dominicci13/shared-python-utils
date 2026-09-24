@@ -187,8 +187,22 @@ Open Excel workbooks, run macros, refresh Power Query, and insert images.
 from seller_automation_utils import refresh_workbook, run_macro, paste_image_to_sheet
 
 refresh_workbook("C:/reports/dashboard.xlsm", wait=30)
+refresh_workbook("C:/reports/dashboard.xlsm", wait=0, timeout=600)  # hard time bound (1.8.7+)
 run_macro("C:/reports/report.xlsm", "Module1.FormatSheet")
 ```
+
+`refresh_workbook` saves only if the refresh succeeded (1.8.7+):
+
+- A hardened `Function refresh() As String` returns `""` on success and a reason on failure. On a
+  reason nothing is saved and `WorkbookRefreshError` is raised. It is deliberately not a
+  `com_error`, so it passes COM retry loops and reaches the crash handler. An un-hardened
+  `Sub refresh` returns nothing and behaves as before.
+- A save that fails on a OneDrive sharing violation is retried in place.
+- `timeout=` (opt-in) runs the refresh on a worker thread. If it overruns, typically on a modal
+  dialog in the hidden Excel, the worker is stopped from saving, only the Excel started by that
+  call is killed, and `WorkbookRefreshError` is raised.
+- `pid_sink=` receives the pid the call started. Pids already in the list are never killed.
+- A macro return other than `None`, `""` or a failure string raises rather than being guessed at.
 
 ### `file_utils`
 Directory creation, download polling, and directory cleanup.

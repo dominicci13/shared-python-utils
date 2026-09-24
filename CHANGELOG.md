@@ -1,5 +1,76 @@
 # Changelog
 
+## 1.8.7 — 2026-09-23
+
+### Fixed
+- **`excel_utils.refresh_workbook` saves only if the refresh succeeded.** It
+  used to discard the macro's return value and save unconditionally. A failed
+  Power Query refresh was therefore persisted, and the automation emailed a
+  half-refreshed report.
+  - `None` (an un-hardened `Sub refresh`) and `""` mean success. An
+    un-hardened `Sub` therefore behaves exactly as before, which makes this
+    safe to ship ahead of any VBA change.
+  - A non-empty string is the macro's failure reason. Nothing is saved, the
+    reason is logged, and the new `WorkbookRefreshError` is raised, without
+    waiting `wait` first.
+  - Any other return (a Boolean, a number, an Excel error value) is not part of
+    this contract. It raises `WorkbookRefreshError` rather than being guessed
+    at.
+  - `WorkbookRefreshError` is a `RuntimeError`, deliberately not a
+    `pywintypes.com_error`, so callers' COM retry loops let it through to the
+    crash handler.
+  - The verdict is raised only after Excel is torn down. A COM error during
+    teardown is re-raised as `WorkbookRefreshError` if a verdict is pending,
+    so it can never mask a reported failure.
+- Also changed inside `refresh_workbook` only:
+  - `display_alerts` is turned off again after the macro. The macro's
+    `Cleanup` turns alerts back on, and with alerts on, a failed save raises a
+    modal Save As on the hidden Excel instead of an exception.
+  - The save is retried in place (4 attempts, 10s apart) on a COM error, which
+    covers the OneDrive sharing violation that clears within seconds. It is
+    not retried once Excel has disconnected (`RPC_E_DISCONNECTED`, server
+    unavailable, call failed).
+  - `xw.App(..., add_book=False)`: no empty pathless workbook for `Quit` to
+    prompt about.
+  - `wb.close()` is gone. It could raise 1004 after a good save, and
+    `App.__exit__` quits and kills Excel on every path anyway.
+- `run_macro` and `paste_image_to_sheet` are unchanged.
+
+### Added
+- `refresh_workbook(..., timeout=None, pid_sink=None)`, keyword-only and
+  opt-in. `None` keeps the old same-thread behaviour. The timeout is opt-in
+  because every workbook's normal refresh time differs, so no single default
+  is safe.
+  - `timeout` (seconds, must be positive) runs the refresh on a worker thread
+    with its own COM initialisation. If it overruns (a COM call stuck on a
+    modal dialog cannot be interrupted), the worker is fenced: a worker that
+    has not started saving will not save, and the fence is checked again
+    before every save retry. Then only the Excel started by **this call** is
+    killed, through `%SystemRoot%\System32\taskkill.exe` filtered on the pid
+    and on `EXCEL.EXE`, with the result logged. `WorkbookRefreshError` is
+    raised, and its message says whether an Excel was actually killed.
+  - If Excel had not started when the time ran out, the worker runs nothing
+    once it does start, and that late Excel is killed too.
+  - An interrupt (e.g. Ctrl+C) while waiting also fences the worker and kills
+    this call's Excel before propagating.
+  - Success is asserted positively, so a worker that ends without finishing
+    also raises.
+  - `pid_sink` receives the pid this call started. Pids already in the list
+    are never killed, because Windows may have recycled them to another
+    automation's Excel.
+- `WorkbookRefreshError` is exported from the package.
+- Ported from the reference implementation proven in production in
+  amzn-aged-report (2026-09-17), then hardened further: kill scope, teardown
+  masking, the timeout fence, strict return values, the disconnected-save
+  case, slow Excel starts and interrupts.
+- 33 new tests. Every guard that decides whether to save, raise or kill is
+  mutation-checked: removing or loosening any one of them fails the suite.
+- Verified against real Excel on copies of two production workbooks:
+  - un-hardened `Sub`, with and without `timeout`: saved;
+  - hardened `Function` with `timeout`: saved in about 61s;
+  - `timeout=10` on that refresh, with a `pid_sink` already holding a foreign
+    pid: raised after 10.1s, killed only its own Excel (taskkill `SUCCESS`),
+    left the foreign pid alone, did not save, and left no Excel running.
 ## 1.8.6 — 2026-09-23
 
 ### Fixed

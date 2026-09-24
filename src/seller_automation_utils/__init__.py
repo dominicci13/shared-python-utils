@@ -46,7 +46,7 @@ from seller_automation_utils.ebay_api import (
     to_seller_local,
     token_env_var,
 )
-from seller_automation_utils.excel_utils import paste_image_to_sheet, refresh_workbook, run_macro
+from seller_automation_utils.excel_utils import WorkbookRefreshError, paste_image_to_sheet, refresh_workbook, run_macro
 from seller_automation_utils.fleet_state import (
     HeartbeatWriter,
     automation_name,
@@ -108,6 +108,7 @@ __all__ = [
     "to_seller_local",
     "token_env_var",
     # excel_utils
+    "WorkbookRefreshError",
     "paste_image_to_sheet",
     "refresh_workbook",
     "run_macro",
