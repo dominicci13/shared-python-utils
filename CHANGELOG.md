@@ -7,7 +7,7 @@
   archive plus the crashing process's repo, log and page capture into one prompt
   for a model with no tools. Secrets files are refused by name even if tracked;
   URL query strings and token-shaped values in captured text are masked.
-  Not wired into `handle_crash` yet.
+  Wired into `handle_crash` in step 3.
 - **`crash_explainer.explain` runner** (step 2). Runs the Codex CLI with every
   tool disabled, only the Windows and login environment variables, the prompt
   through stdin only and a hard timeout that kills the codex process tree.
@@ -15,6 +15,38 @@
   rejects any run where the model attempted a tool or codex reported no
   completed turn. Every failure becomes one reason
   line; it never raises. Configured by optional `CRASH_AI*` variables.
+- **AI summary in the crash email** (step 3). `handle_crash` now runs: capture,
+  archive, kill its own processes, AI summary, email. The AI step (prompt
+  plus codex) has one overall deadline of `CRASH_AI_TIMEOUT` + 30 s (150 s by
+  default, 630 s at most), after which the email goes out with "timed out
+  after N s"; `CRASH_AI=0` skips it entirely, before any git call or file
+  read. Ctrl+C during the step becomes the reason "interrupted", the record
+  and email still go out, and the `KeyboardInterrupt` is re-raised after.
+  The cleanup moved ahead of the email so a stuck Excel or Chrome is
+  freed during the wait. The email opens with a "What happened, in plain
+  English" block marked AI-generated; "When" and "Which step" (innermost
+  `run_*.py` frame of the last traceback section, plus the last log line)
+  come from code, not the model. URLs in the model's text are broken
+  (`https[:]//`, `www[.]`) so they cannot become links, and the rerun row is
+  labelled "Safe to rerun now? (AI's view)". Any
+  failure becomes one `AI summary unavailable: <reason>` line and the email
+  still goes out. The subject and the tabs/traceback below are unchanged.
+  `crash.json` gains `ai_summary` or `ai_summary_error`, written before the
+  email is attempted.
+- **`crash_explainer.enabled()`** and **`build_prompt(..., log_text=...)`**:
+  `handle_crash` passes the log tail it read before logging anything itself,
+  so the prompt never shows the handler's own lines. Frames are read only
+  inside a traceback's frames section; OneDrive online-only knowledge-base
+  notes are skipped unopened; git calls give up after 10 s.
+- **`fleet_state.update_crash(crash_dir, **fields)`**: atomic merge into
+  `crash.json` that never raises; a failure is logged as a warning.
+  `mark_crash_emailed` now uses it.
+
+### Fixed
+- **Crash email body is HTML-escaped.** The tab list and traceback were
+  inserted raw, so a frame line ending `in <module>` lost `<module>` (parsed
+  as a tag). What the reader sees is otherwise unchanged. A traceback passed
+  as something other than a string no longer stops the email.
 
 ## 1.8.8 — 2026-09-23
 

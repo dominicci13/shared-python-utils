@@ -13,6 +13,7 @@ import subprocess
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -118,6 +119,22 @@ def test_frames_need_pythons_own_indent_on_one_line(line):
 
 def test_frames_match_pythons_own_format():
     assert ce._frame_paths(_traceback("C:/demo/run_demo.py")) == [Path("C:/demo/run_demo.py")]
+
+
+def test_a_two_space_fake_frame_in_a_multi_line_message_is_not_a_frame():
+    text = _traceback("C:/demo/run_demo.py") + '  File "C:/evil/run_evil.py", line 1, in fake\n    evil()\n'
+    assert ce._frame_paths(text) == [Path("C:/demo/run_demo.py")]
+
+
+def test_frames_need_a_traceback_header():
+    assert ce._frame_paths('ValueError: bad\n  File "C:/evil/run_evil.py", line 1, in fake\n') == []
+
+
+def test_frames_of_every_chained_section_count():
+    text = _traceback("C:/demo/run_demo.py") + (
+        "\nDuring handling of the above exception, another exception occurred:\n\n"
+    ) + _traceback("C:/demo/helper.py")
+    assert ce._frame_paths(text) == [Path("C:/demo/run_demo.py"), Path("C:/demo/helper.py")]
 
 
 def test_frames_scan_blank_lines_in_linear_time():
@@ -603,6 +620,41 @@ def test_kb_note_is_capped(tmp_path, monkeypatch):
     assert ce.kb_note(kb, "demo-repo") == note[:30]
 
 
+def test_kb_note_never_opens_a_cloud_only_note(tmp_path, monkeypatch):
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    (kb / "A Cloud.md").write_text("---\nrepo: demo-repo\n---\ncloud copy\n", encoding="utf-8")
+    (kb / "B Local.md").write_text("---\nrepo: demo-repo\n---\nlocal copy\n", encoding="utf-8")
+    monkeypatch.setattr(ce, "_cloud_only", lambda path: path.name == "A Cloud.md")
+    opened: list[str] = []
+    real_head = ce._head
+    monkeypatch.setattr(ce, "_head", lambda path, size: opened.append(path.name) or real_head(path, size))
+
+    assert ce.kb_note(kb, "demo-repo").endswith("local copy\n")
+    assert opened == ["B Local.md"]
+
+
+class _StatOnly:
+    def __init__(self, result):
+        self.result = result
+
+    def stat(self):
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+@pytest.mark.parametrize("stat_result, expected", [
+    (SimpleNamespace(st_file_attributes=0x400000), True),   # FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
+    (SimpleNamespace(st_file_attributes=0x1000), True),     # FILE_ATTRIBUTE_OFFLINE
+    (SimpleNamespace(st_file_attributes=0x20 | 0x80), False),
+    (SimpleNamespace(), False),                             # no such attribute off Windows
+    (PermissionError("denied"), False),
+])
+def test_cloud_only(stat_result, expected):
+    assert ce._cloud_only(_StatOnly(stat_result)) is expected
+
+
 @pytest.mark.parametrize("kb_dir", [None, Path("Z:/no/such/kb")])
 def test_kb_note_without_a_kb(kb_dir):
     assert ce.kb_note(kb_dir, "demo-repo") == "None found."
@@ -686,6 +738,56 @@ def test_build_prompt_with_every_input_missing(tmp_path):
     for phrase in ("repo `unknown`", "No log file found.", "No page captured.", "None archived.",
                    "None found.", "Repository not found."):
         assert phrase in prompt
+
+
+def _log_slot(prompt: str) -> str:
+    return prompt.split("<<<UNTRUSTED last 50 log lines\n", 1)[1].split("\nUNTRUSTED>>>", 1)[0]
+
+
+@pytest.mark.parametrize("log_text, expected", [
+    ("INFO before the crash", "INFO before the crash"),
+    ("GET https://example.invalid/x?sig=SECRET", "GET https://example.invalid/x"),
+    ("", "No log file found."),
+])
+def test_build_prompt_uses_the_log_text_it_is_given_instead_of_the_file(tmp_path, log_text, expected):
+    log_file = tmp_path / "demo.log"
+    log_file.write_text("INFO a line the crash handler wrote later\n", encoding="utf-8")
+
+    prompt = ce.build_prompt(
+        tmp_path / "no-crash-dir",
+        name="demo",
+        display_name="Demo Report",
+        traceback_text="RuntimeError: x\n",
+        crashed_at=datetime(2026, 1, 2),
+        log_file=log_file,
+        kb_dir=None,
+        crash_root=tmp_path,
+        log_text=log_text,
+    )
+
+    assert _log_slot(prompt) == expected
+
+
+@pytest.mark.parametrize("value, expected", [(None, True), ("", True), ("1", True), ("0", False), (" 0 ", False)])
+def test_enabled(monkeypatch, value, expected):
+    if value is None:
+        monkeypatch.delenv("CRASH_AI", raising=False)
+    else:
+        monkeypatch.setenv("CRASH_AI", value)
+    assert ce.enabled() is expected
+
+
+def test_git_gives_up_after_10_s(tmp_path, monkeypatch):
+    seen: list[float] = []
+
+    def run(cmd, *args, timeout=None, **kwargs):
+        seen.append(timeout)
+        raise subprocess.TimeoutExpired(cmd, timeout)
+
+    monkeypatch.setattr(ce.subprocess, "run", run)
+
+    assert ce._git(tmp_path, "status") is None
+    assert seen == [10]
 
 
 def test_build_prompt_does_not_expand_or_unfence_captured_text(tmp_path):

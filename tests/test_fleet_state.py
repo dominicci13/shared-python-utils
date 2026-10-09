@@ -252,6 +252,51 @@ def test_mark_crash_emailed_tolerates_none():
     fleet_state.mark_crash_emailed(None)
 
 
+def test_update_crash_merges_and_keeps_other_keys():
+    crash_dir = fleet_state.record_crash("demo", traceback_text="boom")
+
+    assert fleet_state.update_crash(crash_dir, ai_summary={"why": "x"}, emailed=True) is True
+
+    record = json.loads((crash_dir / "crash.json").read_text(encoding="utf-8"))
+    assert record["ai_summary"] == {"why": "x"}
+    assert record["emailed"] is True
+    assert record["traceback"] == "boom"
+    assert [p.name for p in crash_dir.iterdir()] == ["crash.json"]  # no temp file left behind
+
+
+def test_update_crash_refuses_none_and_missing_or_corrupt_records(tmp_path):
+    assert fleet_state.update_crash(None, emailed=True) is False
+    assert fleet_state.update_crash(tmp_path / "nowhere", emailed=True) is False
+
+    corrupt = tmp_path / "corrupt"
+    corrupt.mkdir()
+    (corrupt / "crash.json").write_text("{not json", encoding="utf-8")
+    assert fleet_state.update_crash(corrupt, emailed=True) is False
+    assert (corrupt / "crash.json").read_text(encoding="utf-8") == "{not json"
+
+
+def test_update_crash_unserializable_value_keeps_the_record(tmp_path):
+    crash_dir = fleet_state.record_crash("demo", traceback_text="boom")
+
+    assert fleet_state.update_crash(crash_dir, ai_summary=object()) is False
+
+    record = json.loads((crash_dir / "crash.json").read_text(encoding="utf-8"))
+    assert record["traceback"] == "boom"
+    assert "ai_summary" not in record
+
+
+def test_update_crash_failure_is_a_warning(tmp_path, monkeypatch, caplog):
+    crash_dir = fleet_state.record_crash("demo", traceback_text="boom")
+    caplog.set_level("DEBUG", logger=fleet_state.log.name)
+
+    assert fleet_state.update_crash(tmp_path / "nowhere", emailed=True) is False
+    monkeypatch.setattr(fleet_state, "_atomic_write_json", lambda path, payload: False)
+    assert fleet_state.update_crash(crash_dir, emailed=True) is False
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING" and "crash record" in r.getMessage()]
+    assert len(warnings) == 2
+
+
 def test_prune_crashes_removes_only_old(state_dir):
     fresh = fleet_state.record_crash("demo", traceback_text="new")
     stale = fleet_state.crash_root() / "demo" / "20260101-000000"

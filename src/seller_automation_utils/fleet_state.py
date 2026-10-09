@@ -62,6 +62,7 @@ __all__ = [
     "clear_heartbeat",
     "snapshot_jobs",
     "record_crash",
+    "update_crash",
     "mark_crash_emailed",
     "prune_crashes",
     "HeartbeatWriter",
@@ -394,7 +395,7 @@ def record_crash(
     means the traceback survives even when the notification does not.
 
     The screenshot and DOM files are **moved** into the archive rather than
-    copied, since ``handle_crash`` deletes them immediately afterwards; before
+    copied, since ``handle_crash`` used to delete them right after emailing; before
     this existed, the richest debugging artifacts lived only as mail
     attachments.
 
@@ -441,6 +442,37 @@ def record_crash(
         return None
 
 
+def update_crash(crash_dir: Path | None, **fields: Any) -> bool:
+    """Merge ``fields`` into a crash record's ``crash.json``, atomically.
+
+    Used after :func:`record_crash` for what is only known later: the AI
+    summary (or why there is none) and whether the alert email went out.
+
+    Args:
+        crash_dir (Path | None): Directory returned by :func:`record_crash`.
+        **fields (Any): JSON-serializable keys to set; existing keys are
+            overwritten, all others kept.
+
+    Returns:
+        bool: True when the record was rewritten. False when ``crash_dir`` is
+            None or the record could not be read or written; the second is
+            logged as a warning. Never raises.
+    """
+    if crash_dir is None:
+        return False
+    try:
+        record_file = crash_dir / "crash.json"
+        payload = json.loads(record_file.read_text(encoding="utf-8"))
+        payload.update(fields)
+        if _atomic_write_json(record_file, payload):
+            return True
+        # Warning, not debug: crash.json now silently lacks the summary or still says the email never went.
+        log.warning("Could not write the crash record in %s", crash_dir)
+    except Exception:
+        log.warning("Could not update the crash record in %s", crash_dir, exc_info=True)
+    return False
+
+
 def mark_crash_emailed(crash_dir: Path | None) -> None:
     """Flip a crash record's ``emailed`` flag after the alert email is sent.
 
@@ -451,15 +483,7 @@ def mark_crash_emailed(crash_dir: Path | None) -> None:
     Args:
         crash_dir (Path | None): Directory returned by :func:`record_crash`.
     """
-    if crash_dir is None:
-        return
-    try:
-        record_file = crash_dir / "crash.json"
-        payload = json.loads(record_file.read_text(encoding="utf-8"))
-        payload["emailed"] = True
-        _atomic_write_json(record_file, payload)
-    except Exception:
-        log.debug("Could not mark crash emailed in %s", crash_dir, exc_info=True)
+    update_crash(crash_dir, emailed=True)
 
 
 def prune_crashes(retention_days: int = CRASH_RETENTION_DAYS) -> int:

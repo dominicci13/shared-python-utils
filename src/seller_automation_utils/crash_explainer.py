@@ -4,8 +4,8 @@
 ``crashes\\<name>\\<timestamp>\\`` (see :mod:`fleet_state`). This module turns
 that archive, plus what the crashing process can still see (its git checkout,
 its own log file, the knowledge-base note for its repo), into one prompt for a
-model that answers in the shape of :data:`RESPONSE_SCHEMA`. The answer is meant
-to sit above the raw traceback in the crash email.
+model that answers in the shape of :data:`RESPONSE_SCHEMA`. ``handle_crash``
+puts the answer above the raw traceback in the crash email.
 
 Code is read from **disk**, not from git history: a live crash ran whatever is
 in the working tree, committed or not. ``git ls-files`` decides which repo
@@ -17,7 +17,9 @@ name (``.env*`` other than ``*.example``, ``config/*.json``), because
 ``.gitignore`` stops an accidental ``git add`` but not a forced one.
 
 The traceback is captured text too: an exception message can contain lines
-shaped like frames. Frames on a network path are dropped before any filesystem
+shaped like frames, so only lines between a ``Traceback (most recent call
+last):`` header and its exception line count as frames. Frames on a network
+path are dropped before any filesystem
 call, and a library frame is read only from inside the installed package that
 is running. URL query strings and token-shaped values are masked in every
 captured slot (traceback, log tail, page text, previous crashes).
@@ -74,6 +76,7 @@ __all__ = [
     "kb_note",
     "default_kb_dir",
     "build_prompt",
+    "enabled",
     "DEFAULT_MODEL",
     "DEFAULT_EFFORT",
     "DEFAULT_TIMEOUT",
@@ -90,12 +93,16 @@ KB_NOTE_CAP = 50_000
 KB_DIR_ENV = "CRASH_AI_KB_DIR"
 TEXT_EXTENSIONS = (".py", ".bas", ".md", ".txt", ".example", ".toml", ".cfg", ".ini")
 # git runs inside the crash handler, so a wedged git (a lock, a slow network drive) must not hang it.
-GIT_TIMEOUT = 30
+GIT_TIMEOUT = 10
 
 _LIBRARY_DIR = Path(__file__).parent
 _MARKUP = re.compile(r"\[/?[a-z ]+\]")
-# Python's own two-space frame indent, on one line: a looser match lets exception-message text pose as a frame.
-_FRAME = re.compile(r'^  File "([^"\r\n]+)", line \d+', re.M)
+# Only matched against lines from _traceback_sections: the indent alone does not stop a multi-line
+# exception message from posing as a frame.
+_FRAME = re.compile(r'  File "([^"\r\n]+)", line \d+')
+_TRACEBACK_START = "Traceback (most recent call last):"
+# Windows marks a OneDrive cloud-only file with these; opening one starts a download.
+_CLOUD_ONLY_ATTRIBUTES = 0x400000 | 0x1000  # FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_OFFLINE
 _PLACEHOLDER = re.compile(r"\{\{(\w+)\}\}")
 _FENCE = re.compile(r"<<<\s*UNTRUSTED|UNTRUSTED\s*>>>", re.I)
 _ZERO_WIDTH = re.compile("[\u200b-\u200d\u2060\ufeff]")
@@ -315,10 +322,38 @@ def _resolved(path: Path) -> Path:
         return path
 
 
+def _traceback_sections(traceback_text: str) -> list[list[str]]:
+    """The frame and source lines of each ``Traceback (most recent call last):`` section, in order.
+
+    A section runs from that header to the first line that is not indented by
+    at least two spaces, which is normally the exception line. Lines after it,
+    such as the rest of a multi-line exception message, belong to no section
+    until the next header opens one (a chained traceback).
+
+    Args:
+        traceback_text (str): The formatted traceback.
+
+    Returns:
+        list[list[str]]: One list of lines per section, outermost frame first.
+    """
+    sections: list[list[str]] = []
+    current: list[str] | None = None
+    for line in traceback_text.splitlines():
+        if line == _TRACEBACK_START:
+            current = []
+            sections.append(current)
+        elif current is not None and line.startswith("  "):
+            current.append(line)
+        else:
+            current = None
+    return sections
+
+
 def _frame_paths(traceback_text: str) -> list[Path]:
     """Absolute file paths of the traceback's frames, outermost first, without duplicates."""
     paths: list[Path] = []
-    for raw in _FRAME.findall(traceback_text):
+    lines = (line for section in _traceback_sections(traceback_text) for line in section)
+    for raw in (match.group(1) for line in lines if (match := _FRAME.match(line))):
         # A network path is dropped before anything touches it: even resolve() on \\host\share
         # opens an SMB or WebDAV connection to a host named in captured text.
         if raw.replace("/", "\\").startswith("\\\\"):
@@ -628,14 +663,15 @@ def kb_note(kb_dir: Path | None, repo_name: str) -> str:
             ``"None found."``. Only the first 600 bytes of each note are read
             to match the frontmatter. Notes with ``PRD`` in the file name are
             skipped: a design document describes what was planned, not what
-            runs.
+            runs. OneDrive cloud-only notes are skipped without being opened,
+            so the crash handler never waits on a download.
     """
     if kb_dir is None or not kb_dir.is_dir():
         return "None found."
     pattern = re.compile(rf'^repo:\s*"?{re.escape(repo_name)}"?\s*$', re.M)
     try:
         for note in sorted(kb_dir.rglob("*.md")):
-            if "PRD" in note.name:
+            if "PRD" in note.name or _cloud_only(note):
                 continue
             text = _read(note) if pattern.search(_head(note, 600)) else None
             if text is not None:
@@ -660,6 +696,18 @@ def default_kb_dir() -> Path | None:
     except OSError:
         return None
     return next((path for path in candidates if path.is_dir()), None)
+
+
+def _cloud_only(path: Path) -> bool:
+    """True for a file whose content is not on this disk (OneDrive "online only").
+
+    Reads attributes only, which never starts a download. Always False off
+    Windows, where ``st_file_attributes`` does not exist.
+    """
+    try:
+        return bool(getattr(path.stat(), "st_file_attributes", 0) & _CLOUD_ONLY_ATTRIBUTES)
+    except (OSError, ValueError):
+        return False
 
 
 def _head(path: Path, size: int) -> str:
@@ -707,6 +755,7 @@ def build_prompt(
     log_file: Path | None,
     kb_dir: Path | None,
     crash_root: Path,
+    log_text: str | None = None,
 ) -> str:
     """Fill :data:`PROMPT_TEMPLATE` for one live crash.
 
@@ -723,6 +772,11 @@ def build_prompt(
         log_file (Path | None): This process's log file.
         kb_dir (Path | None): Knowledge-base root, normally :func:`default_kb_dir`.
         crash_root (Path): The crash archive root, for previous crashes.
+        log_text (str | None): The log tail already read, normally
+            :func:`log_tail` output taken before the crash handler logged
+            anything; used instead of reading ``log_file``, which by now ends
+            with the handler's own lines. Masked again here; empty becomes
+            "No log file found.".
 
     Returns:
         str: The prompt. Every missing, unreadable or malformed input becomes
@@ -737,7 +791,7 @@ def build_prompt(
         "repo": repo_name or "unknown",
         "crashed_at": crashed_at.strftime("%Y-%m-%d %H:%M:%S %Z").strip(),
         "traceback": _defang(_redact(traceback_text.strip())),
-        "log_tail": _defang(log_tail(log_file)),
+        "log_tail": _defang(log_tail(log_file) if log_text is None else _redact(log_text) or "No log file found."),
         "page_text": _defang(page_text(crash_dir)),
         "previous_crashes": _defang(
             previous_crashes(crash_root, repo_name, crashed_at, crash_dir) if repo_name else "None archived."
@@ -747,6 +801,15 @@ def build_prompt(
         "files": code_files(repo_root, traceback_text),
     }
     return _PLACEHOLDER.sub(lambda match: slots[match.group(1)], PROMPT_TEMPLATE)
+
+
+def enabled() -> bool:
+    """False when ``CRASH_AI=0``, so a caller can skip building the prompt too.
+
+    Returns:
+        bool: Whether the AI summary is switched on.
+    """
+    return os.environ.get("CRASH_AI", "").strip() != "0"
 
 
 def crash_ai_timeout() -> int:
@@ -990,7 +1053,7 @@ def _cap_strings(value: Any) -> Any:
 
 def _run_codex(prompt: str, screenshot: Path | None) -> tuple[dict[str, Any] | None, str | None]:
     """:func:`explain` without its catch-all."""
-    if os.environ.get("CRASH_AI", "").strip() == "0":
+    if not enabled():
         return None, "disabled (CRASH_AI=0)"
     codex = _find_codex()
     if codex is None:
