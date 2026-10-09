@@ -81,7 +81,7 @@ db_name = get_env("DB_NAME", required=True)
 ```
 
 ### `crash_explainer`
-In progress (Crash Explainer, unreleased). Builds the prompt that asks an AI model to explain a live crash in plain English: the traceback, the process's own log tail, the page text captured at crash time, recent crashes of the same repo, and the repo's tracked files read from disk. `.env*` and `config/*.json` are refused by name even when tracked, and URL query strings and token-shaped values are masked in the captured text. Not called by `handle_crash` yet.
+In progress (Crash Explainer, unreleased). Builds the prompt that asks an AI model to explain a live crash in plain English: the traceback, the process's own log tail, the page text captured at crash time, recent crashes of the same repo, and the repo's tracked files read from disk. `.env*` and `config/*.json` are refused by name even when tracked, and URL query strings and token-shaped values are masked in the captured text. `explain(prompt, screenshot)` sends it to the Codex CLI with no tools (prompt through stdin only, hard timeout) and returns the validated answer or a one-line reason; it never raises. Settings, all optional: `CRASH_AI=0` turns it off, `CRASH_AI_MODEL` (default `gpt-5.5`), `CRASH_AI_EFFORT` (`high`), `CRASH_AI_TIMEOUT` (120 s, at most 600), `CRASH_AI_KB_DIR` (else `~/OneDrive*/Automations Knowledge Base`). Not called by `handle_crash` yet.
 
 ### `custom_functions`
 General-purpose helpers: clipboard, shadow DOM, file scanning, SQL connection, process control.

@@ -8,6 +8,13 @@
   for a model with no tools. Secrets files are refused by name even if tracked;
   URL query strings and token-shaped values in captured text are masked.
   Not wired into `handle_crash` yet.
+- **`crash_explainer.explain` runner** (step 2). Runs the Codex CLI with every
+  tool disabled, only the Windows and login environment variables, the prompt
+  through stdin only and a hard timeout that kills the codex process tree.
+  Validates the answer against the schema, caps each string at 1,000 chars and
+  rejects any run where the model attempted a tool or codex reported no
+  completed turn. Every failure becomes one reason
+  line; it never raises. Configured by optional `CRASH_AI*` variables.
 
 ## 1.8.8 — 2026-09-23
 

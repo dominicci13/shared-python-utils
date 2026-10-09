@@ -1,4 +1,4 @@
-"""Build the prompt that asks an AI model to explain a live crash.
+"""Build the prompt that asks an AI model to explain a live crash, and run it through codex.
 
 :func:`alert_utils.handle_crash` archives every crash to
 ``crashes\\<name>\\<timestamp>\\`` (see :mod:`fleet_state`). This module turns
@@ -26,6 +26,11 @@ Missing or malformed inputs (no git repo, no log file, no page capture or one
 that will not parse, no vault) become a short phrase in the prompt, never an
 exception: a crash handler that crashes while explaining a crash loses the
 email the explanation was for.
+
+:func:`explain` runs the prompt through the ``codex`` CLI under the same
+rule: it never raises and turns every failure (codex missing, timeout, expired
+login, usage limit, a tool call, an answer that is not valid JSON or does not
+match :data:`RESPONSE_SCHEMA`) into one short reason for the email.
 """
 from __future__ import annotations
 
@@ -33,15 +38,24 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
+import time
 import unicodedata
 from collections import deque
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from html.parser import HTMLParser
 from logging.handlers import RotatingFileHandler
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+from seller_automation_utils import _winproc
+
+log = logging.getLogger(__name__)
 
 __all__ = [
     "PROMPT_TEMPLATE",
@@ -60,6 +74,13 @@ __all__ = [
     "kb_note",
     "default_kb_dir",
     "build_prompt",
+    "DEFAULT_MODEL",
+    "DEFAULT_EFFORT",
+    "DEFAULT_TIMEOUT",
+    "crash_ai_timeout",
+    "codex_command",
+    "schema_problem",
+    "explain",
 ]
 
 SIZE_CAP = 150_000
@@ -89,6 +110,43 @@ _SECRETS = (
     (re.compile(r"\b(Bearer\s+)[\w~+/.=-]{8,}"), r"\1(redacted)"),
     (re.compile(r"""((?:password|secret|token|api_key)\s*=\s*["']?)[^\s&"',;)]+""", re.I), r"\1(redacted)"),
 )
+
+DEFAULT_MODEL = "gpt-5.5"
+DEFAULT_EFFORT = "high"
+DEFAULT_TIMEOUT = 120
+_MAX_TIMEOUT = 600
+# Otherwise the model's text is bounded only by the prompt asking it to be short.
+_ANSWER_CAP = 1_000
+# Only what Windows and codex's own login need: automation credentials must not reach codex, and
+# OPENAI_* or proxy variables must not redirect it.
+_CODEX_ENV = (
+    "SYSTEMROOT", "WINDIR", "PATH", "PATHEXT", "COMSPEC", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+    "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "TEMP", "TMP", "CODEX_HOME",
+)
+# Effort lands inside a -c TOML string, where a quote would smuggle in other config.
+_SETTING_NAME = re.compile(r"[A-Za-z0-9._-]{1,64}")
+# The command proven in the M1 hand test. -m is always passed because --ignore-user-config drops
+# config.toml's model and the fallback model is rejected on a ChatGPT login.
+_CODEX_FLAGS = (
+    "-c", 'web_search="disabled"', "--json",
+    "--skip-git-repo-check", "--ephemeral", "--ignore-user-config", "--ignore-rules",
+    "-s", "read-only",
+    "--disable", "shell_tool", "--disable", "shell_snapshot", "--disable", "unified_exec",
+    "--disable", "apps", "--disable", "plugins", "--disable", "hooks",
+    "--disable", "browser_use", "--disable", "browser_use_external", "--disable", "in_app_browser",
+    "--disable", "computer_use", "--disable", "image_generation", "--disable", "multi_agent",
+    "--disable", "memories", "--disable", "goals", "--disable", "skill_mcp_dependency_install",
+    "--disable", "tool_suggest", "--disable", "workspace_dependencies",
+)
+# codex prints these on successful runs too, so they must never be read as the error.
+_HARMLESS_STDERR = ("failed to load models cache: missing field base_instructions", "Reading prompt from stdin")
+# An "error" item is codex's own non-fatal notice (a retry, a warning), not something the model ran.
+_TEXT_ITEMS = ("agent_message", "reasoning", "error")
+_LOGIN = re.compile(r"\b401\b|unauthori[sz]ed|\blog(?:ged)?[ -]?in|expired|sign[ -]?in", re.I)
+_LIMIT = re.compile(r"\b429\b|rate.?limit|usage limit|quota", re.I)
+_JSON_TYPES = {"object": dict, "string": str, "integer": int, "boolean": bool, "null": type(None)}
+_KILL_WAIT = 10
+_DESCENDANT_WAIT = 5
 
 PROMPT_TEMPLATE = """\
 You explain why a scheduled Python automation crashed. Your answer goes at the top of the crash email, above the raw traceback.
@@ -689,3 +747,341 @@ def build_prompt(
         "files": code_files(repo_root, traceback_text),
     }
     return _PLACEHOLDER.sub(lambda match: slots[match.group(1)], PROMPT_TEMPLATE)
+
+
+def crash_ai_timeout() -> int:
+    """Seconds codex may run, from ``CRASH_AI_TIMEOUT``.
+
+    Returns:
+        int: The value when it is a positive whole number, at most 600, else
+            :data:`DEFAULT_TIMEOUT`. A bad value must not remove the bound.
+    """
+    try:
+        seconds = int(os.environ.get("CRASH_AI_TIMEOUT", "").strip())
+    except ValueError:
+        return DEFAULT_TIMEOUT
+    return min(seconds, _MAX_TIMEOUT) if seconds > 0 else DEFAULT_TIMEOUT
+
+
+def _setting(name: str, default: str) -> str:
+    """Environment variable ``name`` when it is a plain name, else ``default`` with a warning."""
+    value = os.environ.get(name, "").strip()
+    if not value:
+        return default
+    if _SETTING_NAME.fullmatch(value):
+        return value
+    log.warning(f"{name} is not a plain model or effort name; using {default}.")
+    return default
+
+
+def _find_codex() -> str | None:
+    """The desktop app's bundled CLI, else ``codex`` on PATH, else None.
+
+    Only an ``.exe`` is accepted: a ``.cmd`` or ``.bat`` shim runs through
+    cmd.exe, which re-parses the arguments.
+    """
+    local = os.environ.get("LOCALAPPDATA")
+    bundled = Path(local) / "Programs" / "OpenAI" / "Codex" / "bin" / "codex.exe" if local else None
+    found = str(bundled) if bundled is not None and bundled.is_file() else shutil.which("codex")
+    return found if found and Path(found).suffix.lower() == ".exe" else None
+
+
+def codex_command(
+    codex: str,
+    *,
+    model: str,
+    effort: str,
+    workdir: Path,
+    schema_file: Path,
+    output_file: Path,
+    screenshot: Path | None,
+) -> list[str]:
+    """The ``codex exec`` argument list. The prompt is never in it: it goes through stdin.
+
+    Args:
+        codex (str): Path of the codex executable.
+        model (str): Model name, passed with ``-m``.
+        effort (str): Reasoning effort, passed as ``-c model_reasoning_effort="<effort>"``.
+        workdir (Path): An empty directory for ``-C``, so the model sees no files.
+        schema_file (Path): File holding :data:`RESPONSE_SCHEMA` as JSON.
+        output_file (Path): Where codex writes the final answer (``-o``).
+        screenshot (Path | None): Attached with ``-i`` only when the file exists.
+
+    Returns:
+        list[str]: The command, ending in ``-`` (read the prompt from stdin).
+    """
+    command = [
+        codex, "exec", "-m", model, "-c", f'model_reasoning_effort="{effort}"', *_CODEX_FLAGS,
+        "-C", str(workdir), "--output-schema", str(schema_file), "-o", str(output_file),
+    ]
+    if screenshot is not None and screenshot.is_file():
+        command += ["-i", str(screenshot)]
+    command.append("-")
+    return command
+
+
+def _events(stdout: str) -> list[dict[str, Any]]:
+    """The ``--json`` event objects, skipping any line that is not one."""
+    events = []
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+    return events
+
+
+def _tool_attempt(events: list[dict[str, Any]]) -> str | None:
+    """The type of the first item that is not model text, or None.
+
+    The command already disables every tool; this catches a codex release that
+    adds a new one, so that output is thrown away instead of trusted.
+    """
+    for event in events:
+        item = event.get("item")
+        if isinstance(item, dict) and item.get("type") not in _TEXT_ITEMS:
+            return str(item.get("type"))[:50]
+    return None
+
+
+def _event_error(event: dict[str, Any]) -> str | None:
+    """The message of a fatal ``error`` or ``turn.failed`` event, else None."""
+    if event.get("type") == "error":
+        message = event.get("message")
+    elif event.get("type") == "turn.failed":
+        error = event.get("error")
+        message = error.get("message") if isinstance(error, dict) else error
+    else:
+        return None
+    return str(message) if message else "(no message)"
+
+
+def _failure(returncode: int, events: list[dict[str, Any]], stderr: str) -> str | None:
+    """One short reason when codex failed, else None.
+
+    Args:
+        returncode (int): The exit code.
+        events (list[dict[str, Any]]): The ``--json`` events.
+        stderr (str): Everything codex wrote to stderr.
+
+    Returns:
+        str | None: An expired-login or usage-limit reason when the error text
+            says so, otherwise the exit code and the last error line; None when
+            the exit code is 0 and no fatal event was printed. The error line
+            is codex's or the server's text: redacted and cut to 200 chars, but
+            not HTML-escaped. Whoever renders the reason must escape it.
+    """
+    messages = [message for event in events if (message := _event_error(event))]
+    if returncode == 0 and not messages:
+        return None
+    noise = [
+        line.strip()
+        for line in stderr.splitlines()
+        if line.strip() and not any(harmless in line for harmless in _HARMLESS_STDERR)
+    ]
+    text = "\n".join([*messages, *noise])
+    if _LOGIN.search(text):
+        return "Codex login expired or missing"
+    if _LIMIT.search(text):
+        return "rate or usage limit reached"
+    lines = [line.strip() for message in messages for line in message.splitlines() if line.strip()] or noise
+    last = _redact(lines[-1])[:200] if lines else "no error output"
+    return f"codex failed (exit {returncode}): {last}"
+
+
+def _json_type(value: Any) -> str:
+    """The JSON Schema type name of a parsed JSON value."""
+    if isinstance(value, bool):
+        return "boolean"
+    for name, kind in _JSON_TYPES.items():
+        if isinstance(value, kind):
+            return name
+    return {float: "number", list: "array"}.get(type(value), type(value).__name__)
+
+
+def schema_problem(value: Any, schema: dict[str, Any], where: str = "answer") -> str | None:
+    """The first way ``value`` breaks ``schema``, or None when it conforms.
+
+    Supports exactly what :data:`RESPONSE_SCHEMA` uses: ``type`` (one name or a
+    list such as ``["string", "null"]``) over object, string, integer, boolean
+    and null; ``enum``; ``properties``; ``required``; and
+    ``additionalProperties: false``. ``true`` is not an integer here, although
+    Python treats it as one.
+
+    Args:
+        value (Any): Parsed JSON.
+        schema (dict[str, Any]): The schema or subschema.
+        where (str): Dotted path of ``value``, for the message.
+
+    Returns:
+        str | None: A short problem such as ``"answer is missing why"``.
+    """
+    allowed = schema.get("type")
+    if allowed is not None:
+        allowed = [allowed] if isinstance(allowed, str) else allowed
+        if _json_type(value) not in allowed:
+            return f"{where} should be {' or '.join(allowed)}, not {_json_type(value)}"
+    if "enum" in schema and value not in schema["enum"]:
+        return f"{where} is not one of {', '.join(map(str, schema['enum']))}"
+    if isinstance(value, dict):
+        properties = schema.get("properties", {})
+        for key in schema.get("required", []):
+            if key not in value:
+                return f"{where} is missing {key}"
+        if schema.get("additionalProperties") is False:
+            for key in value:
+                if key not in properties:
+                    return f"{where} has an unexpected key"  # the key is model text, so never echoed
+        for key, subschema in properties.items():
+            if key in value and (problem := schema_problem(value[key], subschema, f"{where}.{key}")):
+                return problem
+    return None
+
+
+def _kill_tree(proc: subprocess.Popen[bytes]) -> None:
+    """Kill codex and everything it started, and nothing else.
+
+    Not ``taskkill /t`` and never by image name: the first follows recorded
+    parent pids into stale branches, the second hits other automations (see
+    ``alert_utils._kill_own_processes``). Descendants are collected while codex
+    is still alive, because its death breaks the age check that verifies them.
+    Termination is asynchronous, so each descendant gets a short bounded wait:
+    one still exiting can hold a file in the temporary directories open.
+    """
+    descendants: list[tuple[int, str, int]] = []
+    try:
+        descendants = _winproc.verified_descendants(proc.pid)
+        for pid, exe, created in reversed(descendants):
+            _winproc.terminate(pid, created, f"({exe})")
+    finally:
+        proc.kill()
+    try:
+        proc.wait(timeout=_KILL_WAIT)
+    except subprocess.TimeoutExpired:
+        log.warning(f"codex (pid {proc.pid}) had not exited {_KILL_WAIT} s after being killed.")
+    deadline = time.monotonic() + _DESCENDANT_WAIT
+    for pid, _exe, created in descendants:
+        while _winproc.creation_time(pid) == created and time.monotonic() < deadline:
+            time.sleep(0.1)
+
+
+@contextmanager
+def _temp_dir(prefix: str) -> Iterator[Path]:
+    """A fresh temporary directory, removed on exit; a failed removal is logged, never raised."""
+    path = Path(tempfile.mkdtemp(prefix=prefix))
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
+        if path.exists():
+            log.warning(f"Could not remove the temporary folder {path}.")
+
+
+def _cap_strings(value: Any) -> Any:
+    """``value`` with every string longer than :data:`_ANSWER_CAP` cut to it, ending in an ellipsis."""
+    if isinstance(value, str) and len(value) > _ANSWER_CAP:
+        return value[: _ANSWER_CAP - 1] + "…"
+    if isinstance(value, dict):
+        return {key: _cap_strings(item) for key, item in value.items()}
+    return value
+
+
+def _run_codex(prompt: str, screenshot: Path | None) -> tuple[dict[str, Any] | None, str | None]:
+    """:func:`explain` without its catch-all."""
+    if os.environ.get("CRASH_AI", "").strip() == "0":
+        return None, "disabled (CRASH_AI=0)"
+    codex = _find_codex()
+    if codex is None:
+        return None, "codex not found"
+    timeout = crash_ai_timeout()
+    with _temp_dir("crash-ai-cwd-") as workdir, _temp_dir("crash-ai-io-") as io_dir:
+        schema_file = io_dir / "schema.json"
+        schema_file.write_text(json.dumps(RESPONSE_SCHEMA), encoding="utf-8")
+        output_file = io_dir / "answer.json"
+        prompt_file = io_dir / "prompt.txt"
+        prompt_file.write_bytes(prompt.encode("utf-8", errors="replace"))
+        command = codex_command(
+            codex,
+            model=_setting("CRASH_AI_MODEL", DEFAULT_MODEL),
+            effort=_setting("CRASH_AI_EFFORT", DEFAULT_EFFORT),
+            workdir=workdir,
+            schema_file=schema_file,
+            output_file=output_file,
+            screenshot=screenshot,
+        )
+        # Files, not pipes: a codex that stops reading cannot block a pipe write that runs
+        # before the timeout starts counting.
+        with (
+            prompt_file.open("rb") as stdin,
+            (io_dir / "stdout.jsonl").open("wb") as stdout,
+            (io_dir / "stderr.txt").open("wb") as stderr,
+        ):
+            proc = subprocess.Popen(
+                command,
+                stdin=stdin,
+                stdout=stdout,
+                stderr=stderr,
+                env={name: os.environ[name] for name in _CODEX_ENV if name in os.environ},
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            try:
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                return None, f"timed out after {timeout} s"
+            finally:
+                if proc.poll() is None:
+                    _kill_tree(proc)
+        events = _events((io_dir / "stdout.jsonl").read_text(encoding="utf-8", errors="replace"))
+        stderr_text = (io_dir / "stderr.txt").read_text(encoding="utf-8", errors="replace")
+        if tool := _tool_attempt(events):
+            return None, f"model attempted a tool ({tool})"
+        if failure := _failure(proc.returncode, events, stderr_text):
+            return None, failure
+        # The tool check above passes trivially on empty stdout, so a run that never reported
+        # finishing its turn proves nothing about what the model did.
+        if not any(event.get("type") == "turn.completed" for event in events):
+            return None, "codex printed no events"
+        try:
+            answer = json.loads(output_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None, "invalid JSON from the model"
+    if problem := schema_problem(answer, RESPONSE_SCHEMA):
+        return None, f"answer did not match the schema: {problem}"
+    return _cap_strings(answer), None
+
+
+def explain(prompt: str, screenshot: Path | None = None) -> tuple[dict[str, Any] | None, str | None]:
+    """Ask codex to explain a crash, bounded by ``CRASH_AI_TIMEOUT``. Never raises.
+
+    Configuration is read from the environment at call time: ``CRASH_AI=0``
+    turns it off; ``CRASH_AI_MODEL`` (:data:`DEFAULT_MODEL`), ``CRASH_AI_EFFORT``
+    (:data:`DEFAULT_EFFORT`) and ``CRASH_AI_TIMEOUT`` (:data:`DEFAULT_TIMEOUT`
+    seconds, at most 600) tune it; a model or effort that is not a plain name
+    falls back to the default. codex runs in an empty temporary directory with
+    every tool disabled and only the Windows and login variables of the
+    environment; on timeout it is killed together with its verified
+    descendants.
+
+    Args:
+        prompt (str): The prompt, normally from :func:`build_prompt`. Sent
+            through stdin as UTF-8, never on the command line (32,767-char limit).
+        screenshot (Path | None): The crash screenshot; attached when it exists.
+
+    Returns:
+        tuple[dict[str, Any] | None, str | None]: ``(answer, None)`` with an
+            answer that validates against :data:`RESPONSE_SCHEMA`, every
+            string cut to 1,000 chars, or ``(None, reason)`` with one short
+            reason such as ``"timed out after 120 s"``, ``"Codex login expired
+            or missing"``, ``"rate or usage limit reached"`` or ``"invalid JSON
+            from the model"``. Neither is HTML-escaped: the answer is model
+            text and a reason may quote codex's error, so whoever renders them
+            must escape both.
+    """
+    try:
+        return _run_codex(prompt, screenshot)
+    except Exception as exc:
+        # The crash email must still go out; the traceback stays in the log for whoever debugs this.
+        log.exception("The crash explainer failed unexpectedly.")
+        return None, f"unexpected error: {type(exc).__name__}"
