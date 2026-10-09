@@ -80,6 +80,9 @@ config = load_config_safe("config/settings.json")   # returns {} if file missing
 db_name = get_env("DB_NAME", required=True)
 ```
 
+### `crash_explainer`
+In progress (Crash Explainer, unreleased). Builds the prompt that asks an AI model to explain a live crash in plain English: the traceback, the process's own log tail, the page text captured at crash time, recent crashes of the same repo, and the repo's tracked files read from disk. `.env*` and `config/*.json` are refused by name even when tracked, and URL query strings and token-shaped values are masked in the captured text. Not called by `handle_crash` yet.
+
 ### `custom_functions`
 General-purpose helpers: clipboard, shadow DOM, file scanning, SQL connection, process control.
 

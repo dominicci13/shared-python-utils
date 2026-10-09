@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **`crash_explainer` prompt builder** (Crash Explainer M2, step 1). Turns a crash
+  archive plus the crashing process's repo, log and page capture into one prompt
+  for a model with no tools. Secrets files are refused by name even if tracked;
+  URL query strings and token-shaped values in captured text are masked.
+  Not wired into `handle_crash` yet.
+
 ## 1.8.8 — 2026-09-23
 
 ### Fixed
