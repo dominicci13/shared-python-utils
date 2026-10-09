@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -170,20 +171,27 @@ def test_success_block_has_every_field_above_the_unchanged_report(harness) -> No
     alert_utils.handle_crash(None, TRACEBACK, DISPLAY)
     body = harness.body
 
+    value_cell = f'</b></td><td style="{alert_utils._CELL}">'
     expected = [
         "<b>What happened, in plain English</b>",
         "AI-generated. Check it before acting on it.",
-        f"<b>What happened:</b> {SUMMARY['what_happened']}<br>",
-        f"<b>When:</b> {STAMP}<br>",
-        "<b>Which step:</b> main in run_demo_report.py, line 42<br>"
-        "Last log line: 2026-01-02 03:04:01 INFO Opening the reports page.<br>",
-        f"<b>Why:</b> {SUMMARY['why']}<br>",
-        "<b>How to fix:</b> Sign in once in the automation&#x27;s browser profile.<br>Then rerun.<br>",
-        "<b>Technical fix:</b> run_demo_report.py, line 42: Check for the sign-in page after loading "
-        "the reports page and raise a clear error.<br>",
-        "<b>Safe to rerun now? (AI's view)</b> Yes, after the check below. Nothing was written or emailed "
-        "before the failure.<br>",
-        "<b>Confidence:</b> Medium<br>",
+        f"<b>Safe to rerun now? (AI's view){value_cell}"
+        '<span style="background:#fef3c7;color:#92400e;padding:2px 8px"><b>Yes, after the check below</b></span></td>',
+        f"<b>Confidence{value_cell}Medium</td>",
+        f"<b>When{value_cell}{STAMP}</td>",
+        f"<b>Which step{value_cell}main in run_demo_report.py, line 42<br>"
+        "Last log line: 2026-01-02 03:04:01 INFO Opening the reports page.</td>",
+        "<b>What happened</b></p>",
+        f">{SUMMARY['what_happened']}</p>",
+        "<b>Why</b></p>",
+        f">{SUMMARY['why']}</p>",
+        "<b>How to fix</b></p>",
+        ">Sign in once in the automation&#x27;s browser profile.<br>Then rerun.</p>",
+        "<b>Why a rerun is or is not safe</b></p>",
+        ">Nothing was written or emailed before the failure.</p>",
+        "<b>Technical fix</b></p>",
+        "monospace\">run_demo_report.py, line 42</span><br>Check for the sign-in page after loading "
+        "the reports page and raise a clear error.</p>",
     ]
     for fragment in expected:
         assert fragment in body, fragment
@@ -257,7 +265,7 @@ def test_crash_ai_0_skips_building_the_prompt(harness, monkeypatch) -> None:
     alert_utils.handle_crash(None, TRACEBACK, DISPLAY)
 
     assert harness.events == ["record", "kill", "send"]
-    assert "<i>AI summary unavailable: disabled (CRASH_AI=0)</i>" in harness.body
+    assert ">AI summary unavailable: disabled (CRASH_AI=0)</p>" in harness.body
     assert harness.record()["ai_summary_error"] == "disabled (CRASH_AI=0)"
 
 
@@ -284,7 +292,7 @@ def test_a_hung_ai_step_is_abandoned_at_the_deadline_and_the_email_goes_out(harn
             if thread.name == "crash-ai-summary":
                 thread.join(5)
 
-    assert "<i>AI summary unavailable: timed out after 0.2 s</i>" in harness.body
+    assert ">AI summary unavailable: timed out after 0.2 s</p>" in harness.body
     assert harness.record()["ai_summary_error"] == "timed out after 0.2 s"
     assert harness.record()["emailed"] is True
 
@@ -323,7 +331,7 @@ def test_ctrl_c_during_the_ai_step_still_records_and_emails_then_reraises(harnes
     with pytest.raises(KeyboardInterrupt):
         alert_utils.handle_crash(None, TRACEBACK, DISPLAY)
 
-    assert "<i>AI summary unavailable: interrupted</i>" in harness.body
+    assert ">AI summary unavailable: interrupted</p>" in harness.body
     record = harness.record()
     assert record["ai_summary_error"] == "interrupted"
     assert record["emailed"] is True
@@ -356,7 +364,7 @@ def test_explain_failure_becomes_the_reason_line(harness, reason, expected) -> N
     alert_utils.handle_crash(None, TRACEBACK, DISPLAY)
 
     body = harness.body
-    assert f"<i>AI summary unavailable: {html.escape(expected)}</i>" in body
+    assert f">AI summary unavailable: {html.escape(expected)}</p>" in body
     assert "What happened, in plain English" not in body
     assert f"<pre>{html.escape(TRACEBACK)}</pre>" in body
     record = harness.record()
@@ -406,6 +414,16 @@ def test_a_summary_that_cannot_render_falls_back_to_the_reason_line(harness) -> 
 
     assert "AI summary unavailable: could not render the summary: KeyError" in harness.body
     assert "What happened, in plain English" not in harness.body
+
+
+def test_an_unhashable_rerun_value_falls_back_to_the_reason_line(harness) -> None:
+    harness.set_answer({**SUMMARY, "safe_to_rerun": ["yes"]}, None)
+
+    alert_utils.handle_crash(None, TRACEBACK, DISPLAY)
+
+    assert "AI summary unavailable: could not render the summary: TypeError" in harness.body
+    assert "What happened, in plain English" not in harness.body
+    assert harness.record()["emailed"] is True
 
 
 # --- R6: crash.json --------------------------------------------------------------------------
@@ -480,6 +498,13 @@ def test_reason_is_escaped(harness) -> None:
     assert "<b>server</b>" not in harness.body
 
 
+def test_urls_in_the_reason_are_broken_so_they_cannot_auto_link() -> None:
+    block = alert_utils._summary_html(None, "codex failed: see https://status.example/x or WWW.example.test", STAMP, "")
+
+    assert "AI summary unavailable: codex failed: see https[:]//status.example/x or WWW[.]example.test</p>" in block
+    assert "://" not in block
+
+
 def test_every_summary_field_is_escaped() -> None:
     hostile = "<img src=x onerror=alert(1)>"
     summary = {
@@ -512,8 +537,31 @@ def test_urls_in_every_model_field_are_broken_so_they_cannot_auto_link() -> None
     assert "://" not in block
     assert "www." not in block.lower()
     assert block.count("Open https[:]//evil.example/login or WWW[.]evil.example now") == 5
-    assert "ftp[:]//evil.example/x.py: Open" in block
+    assert "ftp[:]//evil.example/x.py</span><br>Open" in block
     assert "AI-generated. Check it before acting on it." in block
+
+
+def test_hostile_values_cannot_add_styles_or_tags_or_break_the_layout() -> None:
+    hostile = """x" style="color:red" ' ; <b>x</b> url(http://e) </span></td></table>"""
+    summary = {
+        **{key: hostile for key in SUMMARY},
+        "technical_fix": {"file": hostile, "line": hostile, "change": hostile},
+    }
+    # Every style the layout emits, gray fallback badge included, from benign values.
+    layout_styles = {
+        style
+        for value in (*alert_utils._RERUN, "unknown")
+        for style in re.findall(
+            r'style="([^"]*)"',
+            alert_utils._summary_html({**SUMMARY, "safe_to_rerun": value}, None, STAMP, "Unknown"),
+        )
+    }
+
+    block = alert_utils._summary_html(summary, None, hostile, hostile)
+
+    assert set(re.findall(r'style="([^"]*)"', block)) <= layout_styles
+    assert block.count("<span") == block.count("</span>")
+    assert set(re.findall(r"</?([a-zA-Z][a-zA-Z0-9]*)", block)) <= {"b", "br", "div", "p", "span", "table", "td", "tr"}
 
 
 # --- _summary_html branches ------------------------------------------------------------------
@@ -522,39 +570,46 @@ def test_urls_in_every_model_field_are_broken_so_they_cannot_auto_link() -> None
 @pytest.mark.parametrize(
     ("fix", "expected"),
     [
-        ({"file": "run_x.py", "line": 7, "change": "Wait longer."}, "run_x.py, line 7: Wait longer."),
-        ({"file": "run_x.py", "line": None, "change": "Wait longer."}, "run_x.py: Wait longer."),
+        ({"file": "run_x.py", "line": 7, "change": "Wait longer."}, 'monospace">run_x.py, line 7</span><br>Wait longer.</p>'),
+        ({"file": "run_x.py", "line": None, "change": "Wait longer."}, 'monospace">run_x.py</span><br>Wait longer.</p>'),
         ({"file": None, "line": None, "change": "No code change; the site was down."},
-         "No code change; the site was down."),
+         '<b>Technical fix</b></p><p style="margin:0;">No code change; the site was down.</p>'),
     ],
 )
 def test_technical_fix_rendering(fix, expected) -> None:
     block = alert_utils._summary_html({**SUMMARY, "technical_fix": fix}, None, STAMP, "Unknown")
 
-    assert f"<b>Technical fix:</b> {html.escape(expected)}<br>" in block
+    assert expected in block
 
 
 @pytest.mark.parametrize(
-    ("value", "label"),
-    [("yes", "Yes"), ("yes_after_check", "Yes, after the check below"), ("no", "No")],
+    ("value", "label", "background", "color"),
+    [
+        ("yes", "Yes", "#dcfce7", "#166534"),
+        ("yes_after_check", "Yes, after the check below", "#fef3c7", "#92400e"),
+        ("no", "No", "#fee2e2", "#991b1b"),
+        ("<maybe>", "&lt;maybe&gt;", "#e5e7eb", "#374151"),
+    ],
 )
-def test_rerun_labels(value, label) -> None:
+def test_rerun_labels(value, label, background, color) -> None:
     block = alert_utils._summary_html({**SUMMARY, "safe_to_rerun": value}, None, STAMP, "Unknown")
 
-    assert f"<b>Safe to rerun now? (AI's view)</b> {label}. Nothing was written or emailed" in block
+    assert f'<span style="background:{background};color:{color};padding:2px 8px"><b>{label}</b></span>' in block
+    assert ">Nothing was written or emailed before the failure.</p>" in block
 
 
 @pytest.mark.parametrize(("value", "label"), [("high", "High"), ("medium", "Medium"), ("low", "Low")])
 def test_confidence_labels(value, label) -> None:
     block = alert_utils._summary_html({**SUMMARY, "confidence": value}, None, STAMP, "Unknown")
 
-    assert f"<b>Confidence:</b> {label}<br>" in block
+    assert f"<b>Confidence</b></td><td style=\"padding:6px 10px;border:1px solid #e5e7eb;vertical-align:top;\">{label}</td>" in block
 
 
-def test_summary_html_makes_no_links_images_or_styles() -> None:
+def test_summary_html_makes_no_links_images_or_external_styles() -> None:
     block = alert_utils._summary_html(SUMMARY, None, STAMP, "main in run_x.py, line 1")
 
-    for forbidden in ("<a ", "<img", "<style", "<link", "http", "style="):
+    # Inline style attributes are the layout; anything that could fetch or link something is not.
+    for forbidden in ("<a ", "<img", "<style", "<link", "http", "url(", "@import", "<hr"):
         assert forbidden not in block
 
 
@@ -642,6 +697,6 @@ def test_last_log_line_is_read_before_handle_crash_logs_anything(harness, tmp_pa
         handler.close()
 
     assert "Asking the AI model to explain the crash." in log_file.read_text(encoding="utf-8")
-    assert "Last log line: INFO Uploading the feed.<br>" in harness.body
+    assert "Last log line: INFO Uploading the feed.</td>" in harness.body
     # The prompt gets the same pre-crash tail, not the file as it reads after handle_crash's own lines.
     assert harness.prompt_kwargs["log_text"] == "INFO Uploading the feed."

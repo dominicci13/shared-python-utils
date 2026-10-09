@@ -469,6 +469,20 @@ def _is_run_script(path: str) -> bool:
 
 
 _RERUN = {"yes": "Yes", "yes_after_check": "Yes, after the check below", "no": "No"}
+_RERUN_COLORS = {
+    "yes": ("#dcfce7", "#166534"),
+    "yes_after_check": ("#fef3c7", "#92400e"),
+    "no": ("#fee2e2", "#991b1b"),
+}
+# Outlook renders HTML through Word, which ignores most margins: spacing comes from empty
+# zero-margin paragraphs, and every paragraph is zeroed so Word adds none of its own.
+_FONT = "font-family:Calibri,Arial,sans-serif;font-size:11pt;"
+_P = "margin:0;"
+_CELL = "padding:6px 10px;border:1px solid #e5e7eb;vertical-align:top;"
+_GAP = f'<p style="{_P}">&nbsp;</p>'
+# Not <hr>: the mail server's signature stamp reads <hr> as the start of a quoted reply and
+# puts the signature above it, in the middle of the crash report.
+_RULE = '<table cellpadding="0" cellspacing="0" width="100%"><tr><td style="border-bottom:1px solid #9ca3af;font-size:1px">&nbsp;</td></tr></table>'
 
 
 _WWW = re.compile(r"(www)\.", re.I)
@@ -492,7 +506,7 @@ def _summary_html(summary: dict[str, Any] | None, reason: str | None, timestamp:
 
     Every model-derived string and the reason are escaped here: the model read
     scraped page text, and a reason may quote codex's own error output. Model
-    text also has its URLs broken (:func:`_model_html`).
+    text and the reason also have their URLs broken (:func:`_model_html`).
 
     Args:
         summary (dict[str, Any] | None): An answer matching
@@ -502,38 +516,64 @@ def _summary_html(summary: dict[str, Any] | None, reason: str | None, timestamp:
         step (str): :func:`_crash_step` output.
 
     Returns:
-        str: Inline HTML: the summary rows ending with a rule that separates
-            them from the report below, or the one "AI summary unavailable" line.
+        str: Inline HTML: a header bar, an at-a-glance table (rerun badge,
+            confidence, when, which step), one titled section per answer field,
+            and a rule that separates them from the report below; or the one
+            "AI summary unavailable" line.
 
     Raises:
         KeyError: When ``summary`` lacks a schema field; ``handle_crash``
             falls back to the reason line.
     """
     if summary is None:
-        return f"<i>AI summary unavailable: {_html_text(reason or 'no reason given')}</i><br><br>"
+        return (
+            f'<p style="{_P}background:#fef3c7;color:#92400e;padding:6px 10px">'
+            f"AI summary unavailable: {_model_html(reason or 'no reason given')}</p>{_GAP}"
+        )
 
     fix = summary["technical_fix"]
+    where = ""
     if fix["file"]:
         where = fix["file"] if fix["line"] is None else f"{fix['file']}, line {fix['line']}"
-        technical = f"{where}: {fix['change']}"
-    else:
-        technical = fix["change"]
     rerun = summary["safe_to_rerun"]
-    rows = (
-        ("What happened:", _model_html(summary["what_happened"])),
-        ("When:", _html_text(timestamp)),
-        ("Which step:", _html_text(step)),
-        ("Why:", _model_html(summary["why"])),
-        ("How to fix:", _model_html(summary["how_to_fix"])),
-        ("Technical fix:", _model_html(technical)),
-        ("Safe to rerun now? (AI's view)", _model_html(f"{_RERUN.get(rerun, rerun)}. {summary['safe_to_rerun_reason']}")),
-        ("Confidence:", _model_html(str(summary["confidence"]).capitalize())),
+    background, color = _RERUN_COLORS.get(rerun, ("#e5e7eb", "#374151"))
+    badge = (
+        f'<span style="background:{background};color:{color};padding:2px 8px">'
+        f"<b>{_model_html(_RERUN.get(rerun, rerun))}</b></span>"
     )
-    fields = "".join(f"<b>{label}</b> {value}<br>" for label, value in rows)
+    glance = (
+        ("Safe to rerun now? (AI's view)", badge),
+        ("Confidence", _model_html(str(summary["confidence"]).capitalize())),
+        ("When", _html_text(timestamp)),
+        ("Which step", _html_text(step)),
+    )
+    glance_rows = "".join(
+        f'<tr><td style="{_CELL}background:#f3f4f6;width:220px"><b>{label}</b></td>'
+        f'<td style="{_CELL}">{value}</td></tr>'
+        for label, value in glance
+    )
+    technical = _model_html(fix["change"])
+    if where:
+        technical = f'<span style="font-family:Consolas,monospace">{_model_html(where)}</span><br>{technical}'
+    sections = (
+        ("What happened", _model_html(summary["what_happened"])),
+        ("Why", _model_html(summary["why"])),
+        ("How to fix", _model_html(summary["how_to_fix"])),
+        ("Why a rerun is or is not safe", _model_html(summary["safe_to_rerun_reason"])),
+        ("Technical fix", technical),
+    )
+    body = "".join(
+        f'<p style="{_P}font-size:12pt;color:#1f2937"><b>{title}</b></p><p style="{_P}">{text}</p>{_GAP}'
+        for title, text in sections
+    )
     return (
-        "<b>What happened, in plain English</b><br>"
-        "<i><small>AI-generated. Check it before acting on it.</small></i><br><br>"
-        f"{fields}<br><hr><br>"
+        f'<table cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;{_FONT}">'
+        f'<tr><td style="background:#1f2937;color:#ffffff;padding:10px 14px">'
+        f'<span style="font-size:14pt"><b>What happened, in plain English</b></span><br>'
+        f'<span style="font-size:9pt;color:#d1d5db">AI-generated. Check it before acting on it.</span>'
+        f"</td></tr></table>{_GAP}"
+        f'<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;{_FONT}">{glance_rows}</table>{_GAP}'
+        f'<div style="{_FONT}">{body}</div>{_RULE}{_GAP}'
     )
 
 

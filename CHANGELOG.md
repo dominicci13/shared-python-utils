@@ -15,6 +15,10 @@
   rejects any run where the model attempted a tool or codex reported no
   completed turn. Every failure becomes one reason
   line; it never raises. Configured by optional `CRASH_AI*` variables.
+- **Crash email layout** (step 5 follow-up, from the smoke-test review): header bar, at-a-glance
+  table with a colored rerun badge, one titled section per field, Outlook-safe
+  spacing, and a table-border separator instead of `<hr>` so the server-stamped
+  signature lands at the end instead of mid-email.
 - **AI summary in the crash email** (step 3). `handle_crash` now runs: capture,
   archive, kill its own processes, AI summary, email. The AI step (prompt
   plus codex) has one overall deadline of `CRASH_AI_TIMEOUT` + 30 s (150 s by
