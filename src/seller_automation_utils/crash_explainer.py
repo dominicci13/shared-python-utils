@@ -615,8 +615,8 @@ def previous_crashes(crash_root: Path, repo_name: str, before: datetime, current
     """One line per earlier archived crash of the same repo, newest last.
 
     Matched by the repo's directory in the traceback, not by automation name:
-    the archive files some crashes under ``seleniumbase`` because the process
-    name is taken from ``sys.argv[0]``.
+    older crashes may be filed under ``seleniumbase``, from before
+    ``automation_name`` snapshotted ``sys.argv[0]`` at import.
 
     Args:
         crash_root (Path): The crash archive root (``fleet_state.crash_root()``).

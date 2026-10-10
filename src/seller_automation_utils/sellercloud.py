@@ -14,9 +14,11 @@ gitignored — see ``config/paths.json.example`` for the schema):
   directory, and moves it to a caller-supplied destination.
 
 Both functions read DOM selectors from ``config/selectors.json`` and
-URLs from ``config/paths.json`` (both resolved relative to the entry
-script, mirroring :mod:`seller_automation_utils.accounts`). The consumer
-repo owns those JSON files and they are typically gitignored — see
+URLs from ``config/paths.json``, resolved relative to the entry script
+like ``config/accounts.json`` in :mod:`seller_automation_utils.accounts`:
+that module resolves eagerly at import, this one lazily on first use, via
+the entry script snapshotted at import (:func:`fleet_state.entry_script`).
+The consumer repo owns those JSON files and they are typically gitignored — see
 ``shared-python-utils/config/selectors.json.example`` and
 ``paths.json.example`` for the required schema.
 
@@ -31,7 +33,6 @@ from __future__ import annotations
 import json
 import logging
 import shutil
-import sys
 import time
 from pathlib import Path
 
@@ -44,6 +45,8 @@ from selenium.common.exceptions import (
     StaleElementReferenceException,
     TimeoutException,
 )
+
+from seller_automation_utils import fleet_state
 
 __all__ = ["request_custom_export", "download_report"]
 
@@ -64,11 +67,12 @@ _PATHS: dict[str, str] | None = None
 def _config_path(name: str) -> Path:
     """Locate ``config/<name>`` relative to the entry script.
 
-    Resolves against ``sys.argv[0]`` first so the lookup is correct even
-    when the script is launched from a different working directory (e.g.,
-    Windows Task Scheduler, a cron wrapper, or a parent shell). Falls
-    back to ``Path.cwd() / "config" / name`` if ``sys.argv[0]`` is empty
-    or its sibling ``config/`` folder doesn't exist.
+    Resolves against the entry script (:func:`fleet_state.entry_script`,
+    fixed at import) first so the lookup is correct even when the script is
+    launched from a different working directory (e.g., Windows Task
+    Scheduler, a cron wrapper, or a parent shell). Falls back to
+    ``Path.cwd() / "config" / name`` if there is no entry script or its
+    sibling ``config/`` folder doesn't exist.
 
     Args:
         name (str): Basename of the JSON file to locate (e.g.
@@ -77,8 +81,11 @@ def _config_path(name: str) -> Path:
     Returns:
         Path: Resolved path to the file. Caller validates existence.
     """
-    if sys.argv and sys.argv[0]:
-        candidate = Path(sys.argv[0]).resolve().parent / "config" / name
+    # The import-time snapshot, not the live sys.argv: SeleniumBase can leave argv swapped
+    # after a failed driver update, and this runs lazily, often after a browser started.
+    entry = fleet_state.entry_script()
+    if entry:
+        candidate = Path(entry).resolve().parent / "config" / name
         if candidate.exists():
             return candidate
     return Path.cwd() / "config" / name

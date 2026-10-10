@@ -53,6 +53,7 @@ log = logging.getLogger(__name__)
 
 __all__ = [
     "automation_name",
+    "entry_script",
     "state_root",
     "heartbeat_dir",
     "heartbeat_path",
@@ -79,6 +80,28 @@ DEFAULT_BEAT_INTERVAL = 15.0
 
 CRASH_RETENTION_DAYS = 30
 
+# Read once at import, before any browser starts: SeleniumBase swaps sys.argv to
+# ["seleniumbase", "get", "chromedriver", ...] while updating the driver and can
+# leave it swapped for the life of the process, filing every later crash under
+# "seleniumbase". "-c" and "-m" are interpreter placeholders, not a script.
+_ENTRY_SCRIPT = (
+    os.path.abspath(sys.argv[0]) if sys.argv and sys.argv[0] not in ("", "-c", "-m") else ""
+)
+
+
+def entry_script() -> str:
+    """The absolute path of the script this process was started from.
+
+    Fixed at the first import of the package, so a later rewrite of
+    ``sys.argv`` (SeleniumBase does one while updating the driver) cannot
+    change it.
+
+    Returns:
+        str: The entry script's absolute path, or ``""`` when there is none
+            (an empty ``sys.argv``, ``python -c`` or ``python -m``).
+    """
+    return _ENTRY_SCRIPT
+
 
 def automation_name(explicit: str | None = None, func: Any = None) -> str:
     """Work out which automation this process is, for heartbeat and crash keys.
@@ -86,7 +109,8 @@ def automation_name(explicit: str | None = None, func: Any = None) -> str:
     Derived rather than passed so the 18 existing repos need no source edit:
     every entry point in the fleet is ``run_<module>.py`` where ``<module>`` is
     also the logger name and the log filename, so stripping the ``run_`` prefix
-    off ``sys.argv[0]`` reproduces it exactly.
+    off the entry script reproduces it exactly. The entry script is
+    :func:`entry_script`, fixed at import, not the live ``sys.argv[0]``.
 
     Both the heartbeat and the crash archive key off this, which is why it is
     not derived from the display name a caller passes to ``handle_crash``:
@@ -105,7 +129,7 @@ def automation_name(explicit: str | None = None, func: Any = None) -> str:
     if explicit:
         return explicit
     try:
-        stem = Path(sys.argv[0]).stem
+        stem = Path(_ENTRY_SCRIPT).stem
         if stem.startswith("run_") and len(stem) > 4:
             return stem[4:]
         if stem:

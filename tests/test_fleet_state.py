@@ -7,6 +7,7 @@ False/None return rather than an exception.
 from __future__ import annotations
 
 import json
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -51,18 +52,82 @@ class _BrokenScheduler:
 ])
 def test_automation_name_from_entry_script(argv0, expected, monkeypatch):
     """The fleet's run_<module>.py convention round-trips to the logger name."""
-    monkeypatch.setattr("sys.argv", [argv0])
+    monkeypatch.setattr(fleet_state, "_ENTRY_SCRIPT", argv0)
     assert fleet_state.automation_name() == expected
 
 
+@pytest.mark.parametrize("swapped_argv", [
+    ["seleniumbase", "get", "chromedriver", "131"],
+    [],
+])
+def test_automation_name_ignores_a_later_argv_swap(swapped_argv, monkeypatch):
+    """SeleniumBase can leave sys.argv swapped; the import-time snapshot wins."""
+    monkeypatch.setattr(fleet_state, "_ENTRY_SCRIPT", r"C:\dev\demo-report\run_demo_report.py")
+    monkeypatch.setattr("sys.argv", swapped_argv)
+    assert fleet_state.automation_name() == "demo_report"
+
+
+def test_package_import_snapshots_argv_before_a_swap(tmp_path):
+    """End to end in a fresh interpreter: the real package import takes the snapshot."""
+    import subprocess
+
+    code = (
+        "import sys; sys.argv = ['run_demo_report.py']\n"
+        "import seller_automation_utils\n"
+        "sys.argv = ['seleniumbase', 'get', 'chromedriver']\n"
+        "print(seller_automation_utils.fleet_state.entry_script())\n"
+        "print(seller_automation_utils.automation_name())\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, timeout=120, check=True,
+        cwd=tmp_path,
+    )
+    *_, entry, name = result.stdout.strip().splitlines()
+    assert entry == str(tmp_path / "run_demo_report.py")
+    assert name == "demo_report"
+
+
+def _import_fleet_state_with_argv(argv: list[str], monkeypatch: pytest.MonkeyPatch):
+    """A private copy of fleet_state imported under ``argv``, so the snapshot is taken afresh."""
+    import importlib.util
+
+    monkeypatch.setattr("sys.argv", argv)
+    spec = importlib.util.spec_from_file_location("_fleet_state_probe", fleet_state.__file__)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("argv", [[], [""], ["-c"], ["-m"]])
+def test_no_entry_script_under_c_m_or_empty_argv(argv, monkeypatch):
+    """-c and -m are not scripts: no entry script, so the name falls back to the function's module."""
+    probe = _import_fleet_state_with_argv(argv, monkeypatch)
+
+    def some_job():
+        pass
+
+    some_job.__module__ = "pkg.my_automation"
+    assert probe.entry_script() == ""
+    assert probe.automation_name(func=some_job) == "my_automation"
+
+
+def test_entry_script_is_absolute_at_import(tmp_path, monkeypatch):
+    """A relative argv[0] resolves against the cwd at import, not wherever the cwd is later."""
+    monkeypatch.chdir(tmp_path)
+    probe = _import_fleet_state_with_argv(["run_demo_report.py"], monkeypatch)
+    monkeypatch.chdir(tmp_path.parent)
+    assert probe.entry_script() == str(tmp_path / "run_demo_report.py")
+
+
 def test_automation_name_explicit_wins(monkeypatch):
-    monkeypatch.setattr("sys.argv", ["run_ebay_best_offers.py"])
+    monkeypatch.setattr(fleet_state, "_ENTRY_SCRIPT", "run_ebay_best_offers.py")
     assert fleet_state.automation_name("override") == "override"
 
 
 def test_automation_name_falls_back_to_func_module(monkeypatch):
     """A process not launched from a run_*.py still gets a usable name."""
-    monkeypatch.setattr("sys.argv", [""])
+    monkeypatch.setattr(fleet_state, "_ENTRY_SCRIPT", "")
+    monkeypatch.setattr("sys.argv", ["run_should_not_be_read.py"])
 
     def some_job():
         pass
@@ -313,3 +378,14 @@ def test_prune_crashes_removes_only_old(state_dir):
 
 def test_prune_crashes_on_empty_archive():
     assert fleet_state.prune_crashes() == 0
+
+
+def test_sellercloud_config_lookup_uses_the_import_time_entry_script(tmp_path, monkeypatch) -> None:
+    from seller_automation_utils import sellercloud
+
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "selectors.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(fleet_state, "_ENTRY_SCRIPT", str(tmp_path / "run_demo_report.py"))
+    monkeypatch.setattr(sys, "argv", ["seleniumbase", "get", "chromedriver"])
+
+    assert sellercloud._config_path("selectors.json") == (tmp_path / "config" / "selectors.json").resolve()

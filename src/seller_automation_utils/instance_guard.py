@@ -36,7 +36,6 @@ import json
 import logging
 import os
 import re
-import sys
 import threading
 from pathlib import Path
 from typing import Any
@@ -100,7 +99,8 @@ def instance_identity(explicit: str | None = None, argv0: str | None = None) -> 
     Args:
         explicit (str | None): Caller-supplied automation name, which wins when
             non-blank.
-        argv0 (str | None): The entry script path, normally ``sys.argv[0]``.
+        argv0 (str | None): The entry script path, normally
+            :func:`fleet_state.entry_script`.
 
     Returns:
         str | None: The identity (e.g. ``demo_report``), or None if the
@@ -320,15 +320,17 @@ def ensure_single_instance(name: str | None = None) -> None:
 
     Args:
         name (str | None): Explicit automation name. Defaults to the one
-            derived from ``sys.argv[0]`` (``run_demo_report.py`` ->
-            ``demo_report``).
+            derived from :func:`fleet_state.entry_script`
+            (``run_demo_report.py`` -> ``demo_report``).
 
     Raises:
         SystemExit: With code 0, when another live process holds the lock.
         pywintypes.error: If the mutex cannot be created for any reason other
             than already existing.
     """
-    identity = instance_identity(name, sys.argv[0] if sys.argv else None)
+    # The import-time entry script, as for the heartbeat and crash key: a later argv
+    # swap must not change the lock identity or turn the guard off.
+    identity = instance_identity(name, fleet_state.entry_script())
     with _state_lock:
         if identity is None:
             _warn_once(("no-identity", None), (

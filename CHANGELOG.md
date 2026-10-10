@@ -47,6 +47,25 @@
   `mark_crash_emailed` now uses it.
 
 ### Fixed
+- **Crashes and heartbeats no longer file under `seleniumbase`.**
+  `fleet_state.automation_name()` read the live `sys.argv[0]`. SeleniumBase
+  4.30.1 swaps `sys.argv` to `["seleniumbase", "get", "chromedriver", ...]`
+  while auto-updating the driver and puts it back with a plain assignment, not
+  a `finally`: when the update fails and its `except` fallback raises too, the
+  swap stays, and a scheduler process could keep the wrong name for days. The
+  name now comes from the new `fleet_state.entry_script()`: the absolute path
+  of `sys.argv[0]` taken when `fleet_state` is imported (at package import,
+  before any browser starts), or empty under `python -c` / `python -m`.
+  Precedence is unchanged: explicit name, then `run_` prefix stripped, then the
+  scheduled function's module (which `-c` / `-m` now reach). The
+  single-instance guard takes its lock name from the same snapshot, so a swap
+  can no longer turn the guard off or give the lock a different name from the
+  heartbeat. `sellercloud`'s lazy `config/` lookup uses it too, so a swapped
+  argv no longer sends it to the working directory.
+- **A crash-cleanup test could fail on CI by chance.** It used the real process id
+  as "this process" in a fake process table; when the CI runner's pid equalled
+  a fake pid (900), the tree under test rewired itself. The fake tables now use a
+  fixed fake pid.
 - **Crash email body is HTML-escaped.** The tab list and traceback were
   inserted raw, so a frame line ending `in <module>` lost `<module>` (parsed
   as a tag). What the reader sees is otherwise unchanged. A traceback passed

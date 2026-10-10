@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from seller_automation_utils import instance_guard, schedule_utils, ui_utils
+from seller_automation_utils import fleet_state, instance_guard, schedule_utils, ui_utils
 
 SRC_DIR = Path(__file__).resolve().parents[1] / "src"
 WINDOWS_ONLY = pytest.mark.skipif(sys.platform != "win32", reason="named mutexes are Windows-only")
@@ -30,12 +30,12 @@ WINDOWS_ONLY = pytest.mark.skipif(sys.platform != "win32", reason="named mutexes
 
 @pytest.fixture
 def fresh(monkeypatch, tmp_path):
-    """Isolate module state, the fleet state dir, argv and atexit for one test."""
+    """Isolate module state, the fleet state dir, the entry script and atexit for one test."""
     monkeypatch.setattr(instance_guard, "_held", {})
     monkeypatch.setattr(instance_guard, "_warned", set())
     monkeypatch.setenv("FC_FLEET_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.delenv(instance_guard.ALLOW_MULTIPLE_ENV, raising=False)
-    monkeypatch.setattr(sys, "argv", [str(tmp_path / "run_fab_demo.py")])
+    monkeypatch.setattr(fleet_state, "_ENTRY_SCRIPT", str(tmp_path / "run_fab_demo.py"))
     registered: list[tuple] = []
     monkeypatch.setattr(instance_guard.atexit, "register", lambda *a: registered.append(a))
     return registered
@@ -163,6 +163,20 @@ def test_acquire_records_holder_and_registers_cleanup(fresh, monkeypatch):
     assert len(fresh) == 1
 
 
+@pytest.mark.parametrize("swapped_argv", [["seleniumbase", "get", "chromedriver", "131"], []])
+def test_identity_ignores_a_later_argv_swap(fresh, monkeypatch, caplog, swapped_argv):
+    """SeleniumBase can leave sys.argv swapped; the lock must still match the heartbeat's name."""
+    fake = FakeMutex("acquired")
+    monkeypatch.setattr(instance_guard, "_create_mutex", fake)
+    monkeypatch.setattr(sys, "argv", swapped_argv)
+
+    with caplog.at_level("WARNING"):
+        instance_guard.ensure_single_instance()
+
+    assert fake.names == ["Global\\seller_automation_utils.single_instance.fab_demo"]
+    assert not any("not applied" in r.getMessage() for r in caplog.records)
+
+
 def test_second_call_in_same_process_is_a_no_op(fresh, monkeypatch):
     """Otherwise ask_user then run_on_schedule would see its own mutex and exit."""
     fake = FakeMutex("acquired")
@@ -263,7 +277,7 @@ def test_opt_out_accepts_one_true_yes(fresh, monkeypatch, value):
 def test_no_identity_skips_the_mutex_and_warns(fresh, monkeypatch, caplog):
     fake = FakeMutex("held")
     monkeypatch.setattr(instance_guard, "_create_mutex", fake)
-    monkeypatch.setattr(sys, "argv", ["-c"])
+    monkeypatch.setattr(fleet_state, "_ENTRY_SCRIPT", "")
 
     with caplog.at_level("WARNING"):
         instance_guard.ensure_single_instance()

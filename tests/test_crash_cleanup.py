@@ -14,7 +14,9 @@ import pytest
 
 from seller_automation_utils import _winproc, alert_utils, custom_functions, excel_utils
 
-ME = os.getpid()
+# A fixed fake pid for this process. The real one could equal a pid in a fake table (CI drew 900
+# once), which silently rewired the tree under test.
+ME = 4
 
 
 def _forbid_kill_app(monkeypatch) -> None:
@@ -50,6 +52,7 @@ def recorded(monkeypatch: pytest.MonkeyPatch) -> Kills:
 def _world(monkeypatch, table: list[tuple[int, int, str]], born: dict[int, int | None]) -> None:
     """A fake process table; this process is born at 1000 unless ``born`` says otherwise."""
     monkeypatch.setattr(_winproc, "process_table", lambda: table)
+    monkeypatch.setattr(os, "getpid", lambda: ME)
     times = {ME: 1000, **born}
     monkeypatch.setattr(_winproc, "creation_time", lambda pid: times.get(pid))
 

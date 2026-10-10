@@ -32,6 +32,8 @@ def _accounts_config_path() -> Path:
     Returns:
         Path: Resolved path to ``config/accounts.json``.
     """
+    # The live sys.argv is safe here only because this runs once, eagerly at import, before
+    # any browser can swap it; sellercloud's lazy lookup uses fleet_state.entry_script().
     if sys.argv and sys.argv[0]:
         script_dir = Path(sys.argv[0]).resolve().parent
         candidate = script_dir / "config" / "accounts.json"

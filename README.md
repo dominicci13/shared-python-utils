@@ -248,7 +248,7 @@ You do not call it: `ask_user` takes the lock as its first action (before the di
 ```python
 from seller_automation_utils import ensure_single_instance
 
-ensure_single_instance()                 # name from sys.argv[0]
+ensure_single_instance()                 # name from the entry script, fixed at import
 ensure_single_instance("my_automation")  # or explicit
 ```
 
