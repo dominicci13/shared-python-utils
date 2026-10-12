@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 1.9.0 — 2026-10-12
+
+Crash Explainer: every crash email opens with a plain-English AI summary, and
+every crash gets a note in the knowledge base when the host has one. Needs the
+Codex CLI logged in on the host; without it the email goes out as before with
+one reason line.
 
 ### Added
 - **`crash_explainer` prompt builder** (Crash Explainer M2, step 1). Turns a crash
@@ -24,7 +29,8 @@
   plus codex) has one overall deadline of `CRASH_AI_TIMEOUT` + 30 s (150 s by
   default, 630 s at most), after which the email goes out with "timed out
   after N s"; `CRASH_AI=0` skips it entirely, before any git call or file
-  read. Ctrl+C during the step becomes the reason "interrupted", the record
+  read, and a host without codex stops there too (`codex not found`).
+  Ctrl+C during the step becomes the reason "interrupted", the record
   and email still go out, and the `KeyboardInterrupt` is re-raised after.
   The cleanup moved ahead of the email so a stuck Excel or Chrome is
   freed during the wait. The email opens with a "What happened, in plain
@@ -50,8 +56,8 @@
   <file>-<function>.md`: frontmatter, an AI-generated label, the latest AI
   summary (or `AI summary unavailable: <reason>`), every occurrence's time and
   archive folder, and for the first 10 occurrences their traceback, open
-  tabs and log tail. **No screenshot enters the knowledge base** (Brian,
-  2026-10-12): a portal screenshot can show buyer details and the vault syncs
+  tabs and log tail. **No screenshot enters the knowledge base**: a portal
+  screenshot can show buyer details and the vault syncs
   to OneDrive and is kept indefinitely, so the note embeds no image and
   `screenshot.png` is never written to the knowledge base; it stays in the
   crash archive (30 days for live crashes), whose folder each occurrence
@@ -113,9 +119,10 @@
   swap stays, and a scheduler process could keep the wrong name for days. The
   name now comes from the new `fleet_state.entry_script()`: the absolute path
   of `sys.argv[0]` taken when `fleet_state` is imported (at package import,
-  before any browser starts), or empty under `python -c` / `python -m`.
-  Precedence is unchanged: explicit name, then `run_` prefix stripped, then the
-  scheduled function's module (which `-c` / `-m` now reach). The
+  before any browser starts), or empty under `python -c` / `python -m` /
+  `python -` (code on stdin). Precedence is unchanged: explicit name, then
+  `run_` prefix stripped, then the scheduled function's module (which `-c` /
+  `-m` / `-` now reach). The
   single-instance guard takes its lock name from the same snapshot, so a swap
   can no longer turn the guard off or give the lock a different name from the
   heartbeat. `sellercloud`'s lazy `config/` lookup uses it too, so a swapped

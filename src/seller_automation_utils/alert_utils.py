@@ -391,7 +391,8 @@ def _ai_summary(
     Finding the repo, building the prompt and running codex happen in a daemon
     thread, joined for at most ``crash_ai_timeout() + 30`` seconds. codex has
     its own timeout and kill inside that thread; the deadline also covers a
-    hang before codex starts (git, a slow disk, the knowledge base).
+    hang before codex starts (git, a slow disk, the knowledge base). When
+    codex is not installed the thread stops before finding the repo.
 
     Args:
         crash_dir (Path | None): The crash archive, or None when archiving failed.
@@ -421,6 +422,11 @@ def _ai_summary(
 
     def work() -> None:
         try:
+            # Checked here, not only in explain(), so a host without codex makes no git calls or file reads.
+            # Inside the thread: shutil.which walks PATH, which can stall on a dead network drive.
+            if crash_explainer._find_codex() is None:
+                outcome.append((None, "codex not found"))
+                return
             repo_root = _repo_root(traceback_text)
             if repo_root is not None:
                 found_root.append(repo_root)

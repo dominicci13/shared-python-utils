@@ -98,9 +98,9 @@ def _import_fleet_state_with_argv(argv: list[str], monkeypatch: pytest.MonkeyPat
     return module
 
 
-@pytest.mark.parametrize("argv", [[], [""], ["-c"], ["-m"]])
+@pytest.mark.parametrize("argv", [[], [""], ["-c"], ["-m"], ["-"]])
 def test_no_entry_script_under_c_m_or_empty_argv(argv, monkeypatch):
-    """-c and -m are not scripts: no entry script, so the name falls back to the function's module."""
+    """-c, -m and - (code on stdin) are not scripts: no entry script, so the name falls back to the function's module."""
     probe = _import_fleet_state_with_argv(argv, monkeypatch)
 
     def some_job():

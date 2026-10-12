@@ -322,7 +322,7 @@ def test_writing_the_same_archive_twice_does_not_add_an_occurrence(tmp_path, rep
     assert _pngs(kb) == []
 
 
-# ── screenshots stay in the local archive (Brian, 2026-10-12) ─────────────
+# ── screenshots stay in the local archive ─────────────
 
 @pytest.mark.parametrize("scenario", ["one crash", "same error twice", "same archive rewritten", "past the detail cap"])
 def test_no_png_is_ever_written_under_the_kb(tmp_path, repo, kb, scenario):

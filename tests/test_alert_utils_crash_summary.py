@@ -92,6 +92,7 @@ def harness(tmp_path, monkeypatch) -> Harness:
     log_file.write_text("2026-01-02 03:04:01 INFO Opening the [cyan]reports[/cyan] page.\n", encoding="utf-8")
     monkeypatch.setattr(crash_explainer, "active_log_file", lambda: log_file)
     monkeypatch.setattr(crash_explainer, "default_kb_dir", lambda: None)
+    monkeypatch.setattr(crash_explainer, "_find_codex", lambda: "codex.exe")
 
     real_record = fleet_state.record_crash
 
@@ -268,6 +269,23 @@ def test_crash_ai_0_skips_building_the_prompt(harness, monkeypatch) -> None:
     assert harness.events == ["record", "kill", "send"]
     assert ">AI summary unavailable: disabled (CRASH_AI=0)</p>" in harness.body
     assert harness.record()["ai_summary_error"] == "disabled (CRASH_AI=0)"
+
+
+def test_no_codex_skips_the_repo_lookup_and_the_prompt(harness, monkeypatch) -> None:
+    monkeypatch.setattr(crash_explainer, "_find_codex", lambda: None)
+    monkeypatch.setattr(crash_explainer, "find_repo_root", lambda traceback_text: harness.events.append("git"))
+
+    def default_kb_dir():
+        harness.events.append("kb_dir")
+
+    monkeypatch.setattr(crash_explainer, "default_kb_dir", default_kb_dir)
+
+    alert_utils.handle_crash(None, TRACEBACK, DISPLAY)
+
+    # The only knowledge-base lookup is the note step's, after the email.
+    assert harness.events == ["record", "kill", "send", "kb_dir"]
+    assert ">AI summary unavailable: codex not found</p>" in harness.body
+    assert harness.record()["ai_summary_error"] == "codex not found"
 
 
 # --- One deadline for the whole AI step ------------------------------------------------------

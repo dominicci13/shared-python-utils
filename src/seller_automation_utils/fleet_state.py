@@ -83,9 +83,9 @@ CRASH_RETENTION_DAYS = 30
 # Read once at import, before any browser starts: SeleniumBase swaps sys.argv to
 # ["seleniumbase", "get", "chromedriver", ...] while updating the driver and can
 # leave it swapped for the life of the process, filing every later crash under
-# "seleniumbase". "-c" and "-m" are interpreter placeholders, not a script.
+# "seleniumbase". "-c", "-m" and "-" (code on stdin) are interpreter placeholders, not a script.
 _ENTRY_SCRIPT = (
-    os.path.abspath(sys.argv[0]) if sys.argv and sys.argv[0] not in ("", "-c", "-m") else ""
+    os.path.abspath(sys.argv[0]) if sys.argv and sys.argv[0] not in ("", "-c", "-m", "-") else ""
 )
 
 
@@ -98,7 +98,8 @@ def entry_script() -> str:
 
     Returns:
         str: The entry script's absolute path, or ``""`` when there is none
-            (an empty ``sys.argv``, ``python -c`` or ``python -m``).
+            (an empty ``sys.argv``, ``python -c``, ``python -m`` or
+            ``python -`` reading code from stdin).
     """
     return _ENTRY_SCRIPT
 
