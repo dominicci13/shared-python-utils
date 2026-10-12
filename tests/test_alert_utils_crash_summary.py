@@ -10,13 +10,14 @@ import html
 import json
 import re
 import threading
-from datetime import datetime
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from seller_automation_utils import alert_utils, crash_explainer, fleet_state
+from seller_automation_utils import alert_utils, crash_explainer, crash_notes, fleet_state
 
 NAME = "demo_report"
 DISPLAY = "Demo Report"
@@ -298,10 +299,10 @@ def test_a_hung_ai_step_is_abandoned_at_the_deadline_and_the_email_goes_out(harn
 
 
 class _RecordingThread(threading.Thread):
-    joins: list[float | None] = []
+    joins: list[tuple[str, float | None]] = []
 
     def join(self, timeout: float | None = None) -> None:
-        _RecordingThread.joins.append(timeout)
+        _RecordingThread.joins.append((self.name, timeout))
         super().join(timeout)
 
 
@@ -312,7 +313,10 @@ def test_the_deadline_is_the_codex_timeout_plus_30_s(harness, monkeypatch) -> No
 
     alert_utils.handle_crash(None, TRACEBACK, DISPLAY)
 
-    assert _RecordingThread.joins == [75]
+    # The note step after the email has its own bound, unaffected by CRASH_AI_TIMEOUT. Other joins
+    # (subprocess pipe readers for git) are not crash-handler deadlines.
+    deadlines = [join for join in _RecordingThread.joins if join[0].startswith("crash-")]
+    assert deadlines == [("crash-ai-summary", 75), ("crash-kb-note", 60)]
     assert "<b>What happened, in plain English</b>" in harness.body
 
 
@@ -335,6 +339,8 @@ def test_ctrl_c_during_the_ai_step_still_records_and_emails_then_reraises(harnes
     record = harness.record()
     assert record["ai_summary_error"] == "interrupted"
     assert record["emailed"] is True
+    # Every join is interrupted here, so the note step gives up too, and says so.
+    assert record["kb_note_error"] == "interrupted"
 
 
 # --- R5: every failure becomes one reason line, and the email still goes out -------------------
@@ -700,3 +706,376 @@ def test_last_log_line_is_read_before_handle_crash_logs_anything(harness, tmp_pa
     assert "Last log line: INFO Uploading the feed.</td>" in harness.body
     # The prompt gets the same pre-crash tail, not the file as it reads after handle_crash's own lines.
     assert harness.prompt_kwargs["log_text"] == "INFO Uploading the feed."
+
+
+# --- M3: the knowledge-base note, written after the email ----------------------------------
+
+
+REPO_ROOT = Path("C:/repos/demo-report")
+
+
+class _SteppingClock(datetime):
+    """fleet_state's clock, one minute later on every call, so two crashes get two archive folders."""
+
+    ticks = 0
+
+    @classmethod
+    def now(cls, tz=None):  # noqa: ANN001, ANN206 - mirrors datetime.now
+        cls.ticks += 1
+        at = datetime(2026, 1, 2, 15, 0, tzinfo=timezone.utc) + timedelta(minutes=cls.ticks)
+        return at if tz is not None else at.replace(tzinfo=None)
+
+
+@pytest.fixture
+def kb(harness, tmp_path, monkeypatch) -> Path:
+    """A temporary vault the note step finds, a fixed repo root, and a recorded note write."""
+    root = tmp_path / "kb"
+    root.mkdir()
+    monkeypatch.setattr(crash_explainer, "default_kb_dir", lambda: root)
+    harness.repo_lookups = 0
+
+    def find_repo_root(traceback_text):
+        harness.repo_lookups += 1
+        return REPO_ROOT
+
+    monkeypatch.setattr(crash_explainer, "find_repo_root", find_repo_root)
+    real_write = crash_notes._write_note
+
+    def write_note(*args, **kwargs):
+        harness.events.append("note")
+        harness.note_kwargs = kwargs
+        return real_write(*args, **kwargs)
+
+    monkeypatch.setattr(crash_notes, "_write_note", write_note)
+    return root
+
+
+def _notes(kb: Path) -> list[Path]:
+    return sorted((kb / "Crashes").rglob("*.md"))
+
+
+def test_the_note_is_written_after_the_email(harness, kb) -> None:
+    alert_utils.handle_crash(None, TRACEBACK, DISPLAY)
+
+    assert harness.events == ["record", "kill", "build_prompt", "explain", "send", "note"]
+    # The email went out before the note existed, so crash.json at send time has no note fields.
+    assert "kb_note" not in harness.record_at_send and "kb_note_error" not in harness.record_at_send
+    [note] = _notes(kb)
+    # The date is crash.json's real "at", which the frozen alert_utils clock does not reach.
+    assert note.parent == kb / "Crashes" / "demo-report"
+    assert note.name.endswith(" TimeoutError in run_demo_report-main.md")
+    record = harness.record()
+    assert record["kb_note"] == str(note)
+    assert "kb_note_error" not in record
+    assert SUMMARY["why"] in note.read_text(encoding="utf-8")
+
+
+def test_the_repo_root_is_found_once_and_shared_by_the_prompt_and_the_note(harness, kb) -> None:
+    alert_utils.handle_crash(None, TRACEBACK, DISPLAY)
+
+    assert harness.repo_lookups == 1
+    assert harness.prompt_kwargs["repo_root"] == REPO_ROOT
+    assert harness.note_kwargs["repo_root"] == REPO_ROOT
+    assert harness.note_kwargs["kb_dir"] == kb
+    assert harness.note_kwargs["log_tail_text"] == "2026-01-02 03:04:01 INFO Opening the reports page."
+
+
+def test_crash_ai_0_still_writes_a_note_that_says_the_summary_was_disabled(harness, kb, monkeypatch) -> None:
+    monkeypatch.setenv("CRASH_AI", "0")
+
+    alert_utils.handle_crash(None, TRACEBACK, DISPLAY)
+
+    assert harness.events == ["record", "kill", "send", "note"]
+    [note] = _notes(kb)
+    assert "AI summary unavailable: disabled (CRASH_AI=0)" in note.read_text(encoding="utf-8")
+    assert harness.record()["kb_note"] == str(note)
+
+
+def test_the_same_error_twice_gives_one_note_with_two_occurrences(harness, kb, monkeypatch) -> None:
+    monkeypatch.setattr(_SteppingClock, "ticks", 0)
+    monkeypatch.setattr(fleet_state, "datetime", _SteppingClock)
+
+    alert_utils.handle_crash(None, TRACEBACK, DISPLAY)
+    first = harness.crash_dir
+    alert_utils.handle_crash(None, TRACEBACK, DISPLAY)
+
+    assert harness.crash_dir != first
+    [note] = _notes(kb)
+    text = note.read_text(encoding="utf-8")
+    assert "\noccurrences: 2\n" in text
+    assert "## Occurrence 2:" in text
+    assert str(first) in text and str(harness.crash_dir) in text
+    assert harness.record()["kb_note"] == str(note)
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected"),
+    [
+        (RuntimeError("disk full"), "unexpected error: RuntimeError"),
+        (SystemExit(1), "unexpected error: SystemExit"),
+    ],
+)
+def test_a_failing_note_step_never_costs_the_email(harness, kb, monkeypatch, exc, expected) -> None:
+    def explode(*args, **kwargs):
+        harness.events.append("note")
+        raise exc
+
+    monkeypatch.setattr(crash_notes, "_write_note", explode)
+
+    alert_utils.handle_crash(None, TRACEBACK, DISPLAY)  # must not raise
+
+    assert harness.events[-2:] == ["send", "note"]
+    assert len(harness.sent) == 1
+    record = harness.record()
+    assert record["emailed"] is True
+    assert record["ai_summary"] == SUMMARY
+    assert record["kb_note_error"] == expected
+    assert "kb_note" not in record
+
+
+def test_a_hung_note_step_is_abandoned_at_its_deadline(harness, kb, monkeypatch) -> None:
+    release = threading.Event()
+
+    def hang(*args, **kwargs):
+        release.wait(30)
+        raise RuntimeError("released")
+
+    monkeypatch.setattr(crash_notes, "_write_note", hang)
+    monkeypatch.setattr(alert_utils, "_NOTE_DEADLINE", 0.2)
+    try:
+        alert_utils.handle_crash(None, TRACEBACK, DISPLAY)
+    finally:
+        release.set()
+        for thread in threading.enumerate():
+            if thread.name == "crash-kb-note":
+                thread.join(5)
+
+    assert len(harness.sent) == 1
+    record = harness.record()
+    assert record["emailed"] is True
+    assert record["kb_note_error"] == "timed out after 0.2 s"
+
+
+@pytest.mark.parametrize("folder", [None, "missing"], ids=["none-found", "mistyped-override"])
+def test_no_vault_is_recorded_and_nothing_is_created(harness, tmp_path, monkeypatch, folder) -> None:
+    target = tmp_path / folder if folder else None
+    monkeypatch.setattr(crash_explainer, "default_kb_dir", lambda: target)
+
+    alert_utils.handle_crash(None, TRACEBACK, DISPLAY)
+
+    expected = f"knowledge base folder not found: {target}" if target else "no knowledge base folder"
+    assert harness.record()["kb_note_error"] == expected
+    assert target is None or not target.exists()
+    assert harness.record()["emailed"] is True
+
+
+@pytest.mark.parametrize(
+    ("folder", "why"),
+    [
+        ("relative-kb", "a relative path"),
+        ("//nas.example.invalid/share/kb", "a network (UNC) path"),
+        ("\\\\nas.example.invalid\\share\\kb", "a network (UNC) path"),
+    ],
+    ids=["relative", "unc-forward-slashes", "unc-backslashes"],
+)
+def test_an_unusable_kb_folder_is_refused_before_it_is_touched(harness, kb, monkeypatch, folder, why) -> None:
+    monkeypatch.setattr(crash_explainer, "default_kb_dir", lambda: Path(folder))
+    touched: list[str] = []
+    real_is_dir = Path.is_dir
+
+    def is_dir(self, *args, **kwargs):
+        touched.append(str(self))
+        return real_is_dir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_dir", is_dir)
+
+    alert_utils.handle_crash(None, TRACEBACK, DISPLAY)
+
+    record = harness.record()
+    assert record["kb_note_error"] == f"knowledge base folder not usable: {why}"
+    assert record["emailed"] is True
+    assert not any("nas.example.invalid" in path or path == "relative-kb" for path in touched)
+    assert "note" not in harness.events
+    # The AI step applies the same rule: the prompt is built without the unusable folder.
+    assert harness.prompt_kwargs["kb_dir"] is None
+
+
+def test_a_kb_folder_inside_the_crashed_repo_is_refused(harness, kb, tmp_path, monkeypatch) -> None:
+    repo = tmp_path / "demo-report"
+    inside = repo / "notes"
+    inside.mkdir(parents=True)
+    monkeypatch.setattr(crash_explainer, "find_repo_root", lambda traceback_text: repo)
+    monkeypatch.setattr(crash_explainer, "default_kb_dir", lambda: inside)
+
+    alert_utils.handle_crash(None, TRACEBACK, DISPLAY)
+
+    assert harness.record()["kb_note_error"] == "knowledge base folder not usable: inside the crashed repo"
+    assert list(inside.iterdir()) == []
+    # Windows paths compare without case, so a differently cased spelling is still inside.
+    assert alert_utils._kb_dir_refusal(Path(str(inside).upper()), repo) == (
+        "knowledge base folder not usable: inside the crashed repo"
+    )
+
+
+def test_a_refused_note_records_why_and_is_left_alone(harness, kb) -> None:
+    alert_utils.handle_crash(None, TRACEBACK, DISPLAY)
+    [note] = _notes(kb)
+    note.write_text("hand-edited, data line gone\n", encoding="utf-8")
+
+    alert_utils.handle_crash(None, TRACEBACK, DISPLAY)
+
+    assert harness.record()["kb_note_error"] == "the existing note's data line is missing or unreadable"
+    assert note.read_text(encoding="utf-8") == "hand-edited, data line gone\n"
+
+
+def test_the_note_is_written_even_when_the_email_fails(harness, kb, monkeypatch) -> None:
+    monkeypatch.setattr(alert_utils.outlook, "send_email", _raise(RuntimeError("Outlook is closed")))
+
+    alert_utils.handle_crash(None, TRACEBACK, DISPLAY)
+
+    [note] = _notes(kb)
+    record = harness.record()
+    assert record["emailed"] is False
+    assert record["kb_note"] == str(note)
+
+
+def test_no_archive_means_no_note_attempt(harness, kb, monkeypatch) -> None:
+    monkeypatch.setattr(fleet_state, "record_crash", lambda *a, **k: None)
+
+    alert_utils.handle_crash(None, TRACEBACK, DISPLAY)
+
+    assert "note" not in harness.events
+    assert not (kb / "Crashes").exists()
+    assert len(harness.sent) == 1
+
+
+class _NoteInterruptedThread(threading.Thread):
+    def join(self, timeout: float | None = None) -> None:
+        super().join(timeout)
+        if self.name == "crash-kb-note":
+            raise KeyboardInterrupt
+
+
+def test_ctrl_c_during_the_note_step_keeps_the_summary_and_the_email_then_reraises(harness, kb, monkeypatch) -> None:
+    monkeypatch.setattr(alert_utils.threading, "Thread", _NoteInterruptedThread)
+
+    with pytest.raises(KeyboardInterrupt):
+        alert_utils.handle_crash(None, TRACEBACK, DISPLAY)
+
+    assert len(harness.sent) == 1
+    assert "<b>What happened, in plain English</b>" in harness.body
+    record = harness.record()
+    assert record["ai_summary"] == SUMMARY
+    assert record["emailed"] is True
+    assert record["kb_note_error"] == "interrupted"
+
+
+_REAL_JOIN = threading.Thread.join
+
+
+def _release_and_join(release: threading.Event) -> None:
+    release.set()
+    for thread in threading.enumerate():
+        if thread.name.startswith("crash-"):
+            # The real join: a test's Thread subclass may make join() raise.
+            _REAL_JOIN(thread, 5)
+
+
+class _AiWaitInterrupted(threading.Thread):
+    def join(self, timeout: float | None = None) -> None:
+        if self.name == "crash-ai-summary":
+            raise KeyboardInterrupt
+        super().join(timeout)
+
+
+def test_ctrl_c_while_the_ai_step_is_still_finding_the_repo_still_emails_and_writes_the_note(
+    harness, kb, monkeypatch
+) -> None:
+    release = threading.Event()
+    lookups: list[str] = []
+
+    def find_repo_root(traceback_text):
+        lookups.append(threading.current_thread().name)
+        if len(lookups) == 1:
+            release.wait(30)
+            # SystemExit, not Exception: _repo_root would swallow an Exception and go on to build the prompt.
+            raise SystemExit("released")
+        return REPO_ROOT
+
+    monkeypatch.setattr(crash_explainer, "find_repo_root", find_repo_root)
+    monkeypatch.setattr(alert_utils.threading, "Thread", _AiWaitInterrupted)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            alert_utils.handle_crash(None, TRACEBACK, DISPLAY)
+        events = list(harness.events)
+    finally:
+        _release_and_join(release)
+
+    assert events == ["record", "kill", "send", "note"]
+    assert ">AI summary unavailable: interrupted</p>" in harness.body
+    record = harness.record()
+    assert record["ai_summary_error"] == "interrupted"
+    assert record["emailed"] is True
+    # The AI step never handed a root over, so the note step found it itself, after the email.
+    assert lookups == ["crash-ai-summary", "crash-kb-note"]
+    [note] = _notes(kb)
+    assert note.parent.name == "demo-report"
+    assert record["kb_note"] == str(note)
+
+
+def test_a_hung_repo_lookup_cannot_delay_the_email(harness, kb, monkeypatch) -> None:
+    """git on this host can outlast its own timeout, so the lookup runs only inside the steps' deadlines."""
+    release = threading.Event()
+
+    def hang(traceback_text):
+        release.wait(30)
+        raise SystemExit("released")
+
+    sent_after: list[float] = []
+    real_send = alert_utils.outlook.send_email
+
+    def send_email(**kwargs):
+        sent_after.append(time.monotonic() - started)
+        real_send(**kwargs)
+
+    monkeypatch.setattr(crash_explainer, "find_repo_root", hang)
+    monkeypatch.setattr(alert_utils.outlook, "send_email", send_email)
+    monkeypatch.setattr(crash_explainer, "crash_ai_timeout", lambda: 0)
+    monkeypatch.setattr(alert_utils, "_AI_DEADLINE_SLACK", 0.2)
+    monkeypatch.setattr(alert_utils, "_NOTE_DEADLINE", 0.2)
+    started = time.monotonic()
+    try:
+        alert_utils.handle_crash(None, TRACEBACK, DISPLAY)
+    finally:
+        _release_and_join(release)
+
+    assert len(sent_after) == 1 and sent_after[0] < 5
+    record = harness.record()
+    assert record["ai_summary_error"] == "timed out after 0.2 s"
+    assert record["emailed"] is True
+    assert record["kb_note_error"] == "timed out after 0.2 s"
+
+
+def test_crash_ai_0_makes_no_repo_lookup_before_the_email(harness, kb, monkeypatch) -> None:
+    monkeypatch.setenv("CRASH_AI", "0")
+
+    def find_repo_root(traceback_text):
+        harness.events.append("find_repo_root")
+        return REPO_ROOT
+
+    monkeypatch.setattr(crash_explainer, "find_repo_root", find_repo_root)
+
+    alert_utils.handle_crash(None, TRACEBACK, DISPLAY)
+
+    assert harness.events == ["record", "kill", "send", "find_repo_root", "note"]
+    assert _notes(kb)[0].parent.name == "demo-report"
+
+
+def test_a_failing_repo_lookup_still_gets_the_summary_email_and_note(harness, kb, monkeypatch) -> None:
+    monkeypatch.setattr(crash_explainer, "find_repo_root", _raise(RuntimeError("git exploded")))
+
+    alert_utils.handle_crash(None, TRACEBACK, DISPLAY)
+
+    assert harness.events == ["record", "kill", "build_prompt", "explain", "send", "note"]
+    assert harness.prompt_kwargs["repo_root"] is None
+    assert harness.record()["kb_note"] == str(_notes(kb)[0])

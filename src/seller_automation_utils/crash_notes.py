@@ -37,6 +37,7 @@ returns ``"None found."``.
 """
 from __future__ import annotations
 
+import glob
 import json
 import logging
 import os
@@ -84,6 +85,8 @@ _KEY_PART_CAP = 60
 _KEY_TYPE_CAP = 80
 _HEAD_BYTES = 4_096
 _FORMAT = 1
+# Far past the note step's 60 s deadline, so a temporary file this old has no live writer.
+_STALE_TMP_SECONDS = 600
 
 _FRAME_LINE = re.compile(r'^  File "([^"\r\n]+)", line \d+, in ([\w.<>]+)\s*$')
 _EXCEPTION_TYPE = re.compile(r"^([A-Za-z_][\w.]*)(?::|$)")
@@ -375,10 +378,22 @@ def _render(data: dict[str, Any], *, automation_link: str | None) -> str:
 def _atomic_write(path: Path, payload: bytes) -> None:
     """Write ``payload`` to ``path`` through a temporary file in the same folder and ``os.replace``.
 
+    A writer thread abandoned at the crash handler's deadline can leave its
+    ``.<stem>.*.tmp`` file behind; any older than :data:`_STALE_TMP_SECONDS`
+    is deleted here first.
+
     Raises:
         OSError: When the file cannot be written; the temporary file is removed.
     """
-    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.stem[:40]}.", suffix=".tmp")
+    prefix = f".{path.stem[:40]}."
+    cutoff = time.time() - _STALE_TMP_SECONDS
+    for stale in path.parent.glob(f"{glob.escape(prefix)}*.tmp"):
+        try:
+            if stale.is_file() and stale.stat().st_mtime < cutoff:
+                stale.unlink()
+        except OSError:
+            continue
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=prefix, suffix=".tmp")
     tmp = Path(tmp_name)
     try:
         with os.fdopen(fd, "wb") as handle:
@@ -427,8 +442,26 @@ def write_crash_note(
             line is unreadable or cloud-only (never overwritten), a disk
             error. Each failure is logged as a warning.
     """
+    return _write_note(crash_dir, kb_dir=kb_dir, repo_root=repo_root, log_tail_text=log_tail_text)[0]
+
+
+def _write_note(
+    crash_dir: Path,
+    *,
+    kb_dir: Path | None,
+    repo_root: Path | None,
+    log_tail_text: str = "",
+) -> tuple[Path | None, str | None]:
+    """:func:`write_crash_note`, also saying why no note was written. Never raises.
+
+    ``alert_utils.handle_crash`` records the reason in ``crash.json``
+    (``kb_note_error``), so a missing note is visible without the log.
+
+    Returns:
+        tuple[Path | None, str | None]: ``(note, None)``, or ``(None, reason)``.
+    """
     if kb_dir is None:
-        return None
+        return None, "no knowledge base folder"
     try:
         record = json.loads((crash_dir / "crash.json").read_text(encoding="utf-8"))
         day = datetime.fromisoformat(str(record["at"])).date()
@@ -441,11 +474,11 @@ def write_crash_note(
         if note.exists():
             if _cloud_only(note):
                 log.warning(f"Crash note not updated: {note} is online-only in OneDrive and is never downloaded here.")
-                return None
+                return None, "the existing note is online-only in OneDrive"
             existing = _read_data(note)
             if existing is None:
                 log.warning(f"Crash note not updated: the data line in {note} is missing or unreadable.")
-                return None
+                return None, "the existing note's data line is missing or unreadable"
             data = existing
 
         occurrence = _occurrence(crash_dir, record, log_tail_text)
@@ -488,11 +521,11 @@ def write_crash_note(
         if automation_note is not None and not _UNSAFE_NAME.search(automation_note.stem):
             link = f"[[{automation_note.stem}]]"
         _atomic_write(note, _render(data, automation_link=link).encode("utf-8"))
-        return note
-    except Exception:
+        return note, None
+    except Exception as exc:
         # Runs inside the crash handler after the email: a failure here must cost only the note.
         log.warning(f"Could not write the knowledge-base crash note for {crash_dir}.", exc_info=True)
-        return None
+        return None, f"unexpected error: {type(exc).__name__}"
 
 
 def _frontmatter(text: str) -> dict[str, Any]:
@@ -528,9 +561,12 @@ def recent_crash_notes(kb_dir: Path | None, repo_name: str, before: date, limit:
 
     Returns:
         str: ``<date>  <error_key>  (x<occurrences>)  why: <ai_why>`` lines,
-            or ``"None found."``. The text came from a model and from
-            captured tracebacks, so it is untrusted: a prompt must put it
-            inside an UNTRUSTED slot, never beside its instructions.
+            or ``"None found."``. The key is capped at :data:`STEM_CAP`
+            characters and the why at :data:`WHY_CAP`; an occurrence count
+            that is not a whole number shows as ``?``. The text came from a
+            model and from captured tracebacks, so it is untrusted: a prompt
+            must put it inside an UNTRUSTED slot, never beside its
+            instructions.
     """
     if kb_dir is None:
         return "None found."
@@ -549,10 +585,12 @@ def recent_crash_notes(kb_dir: Path | None, repo_name: str, before: date, limit:
                     continue
             except ValueError:
                 continue
-            # One line per note even if a hand edit put a line break into a value.
-            why = " ".join(str(fields.get("ai_why") or "unavailable").split())
-            key = " ".join(str(fields.get("error_key") or "unknown").split())
-            line = f"{day}  {key}  (x{fields.get('occurrences', '?')})  why: {why}"
+            # One short line per note even if a hand edit put a line break or a list into a value.
+            why = " ".join(str(fields.get("ai_why") or "unavailable").split())[:WHY_CAP]
+            key = " ".join(str(fields.get("error_key") or "unknown").split())[:STEM_CAP]
+            count = fields.get("occurrences")
+            count = count if isinstance(count, int) and not isinstance(count, bool) else "?"
+            line = f"{day}  {key}  (x{count})  why: {why}"
             rows.append((day, note.name, line))
     except Exception:
         log.warning(f"Could not list the crash notes of {repo_name}.", exc_info=True)

@@ -470,7 +470,8 @@ def update_crash(crash_dir: Path | None, **fields: Any) -> bool:
     """Merge ``fields`` into a crash record's ``crash.json``, atomically.
 
     Used after :func:`record_crash` for what is only known later: the AI
-    summary (or why there is none) and whether the alert email went out.
+    summary (or why there is none), whether the alert email went out, and the
+    knowledge-base note's path or why there is none.
 
     Args:
         crash_dir (Path | None): Directory returned by :func:`record_crash`.

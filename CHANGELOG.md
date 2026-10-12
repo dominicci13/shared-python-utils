@@ -41,9 +41,11 @@
   `handle_crash` passes the log tail it read before logging anything itself,
   so the prompt never shows the handler's own lines. Frames are read only
   inside a traceback's frames section; OneDrive online-only knowledge-base
-  notes are skipped unopened; git calls give up after 10 s.
-- **`crash_notes` module** (Crash Explainer M3, step 2; not wired into
-  `handle_crash` yet). `write_crash_note` writes one knowledge-base note per
+  notes are skipped unopened; git calls give up after 10 s and kill git's
+  whole process tree (Git for Windows' `git.exe` can be a launcher, and
+  killing it alone left the real git running past the timeout).
+- **`crash_notes` module** (Crash Explainer M3, step 2; wired into
+  `handle_crash` in step 3). `write_crash_note` writes one knowledge-base note per
   error per repo per day at `Crashes/<repo>/<YYYY-MM-DD> <ExceptionType> in
   <file>-<function>.md`: frontmatter, an AI-generated label, the latest AI
   summary (or `AI summary unavailable: <reason>`), every occurrence's time and
@@ -67,6 +69,29 @@
 - **`crash_explainer.kb_note_path`**: the automation note lookup behind
   `kb_note`, which now skips the `Crashes/` folder so a crash note (same
   `repo:` line) never stands in for the automation note.
+- **Crash notes and crash history wired in** (Crash Explainer M3, step 3).
+  `handle_crash` now runs: capture, archive, kill its own processes, AI summary
+  (which first finds the repo, inside its deadline), email, then the
+  knowledge-base note (which reuses that repo, or finds it itself inside its
+  own deadline when the AI step is off or did not get that far). No git call
+  runs before the email outside the AI deadline. The note step has its own
+  60 s deadline in a daemon thread, never raises, and is not skipped by
+  `CRASH_AI=0` (the note then says the summary was disabled). `crash.json` gains `kb_note` (the note's path) or
+  `kb_note_error` (the reason); a `CRASH_AI_KB_DIR` that does not exist is
+  refused, never created, and so is one that is relative, a network (UNC)
+  path (refused before it is touched) or inside the crashed repo. A writer
+  abandoned at the deadline can leave a `.<note>.*.tmp` file; the next write
+  to that folder deletes any older than 10 minutes. A failing, hung or interrupted note step cannot
+  delay or lose the email, which has already gone out; Ctrl+C there is
+  re-raised at the end. In the prompt, each previous crash line now ends with
+  that crash's AI `why` (from its `crash.json`, masked, capped at 200
+  characters, fence markers removed), and a new UNTRUSTED block after it holds
+  the repo's last 5 knowledge-base crash notes dated more than 30 days before
+  the crash (`crash_explainer.older_crash_notes`; each line's key and why
+  capped, a non-numeric occurrence count shown as `?`). Fence-marker removal
+  now also drops every invisible format character (zero-width, soft hyphen,
+  bidi controls, tags, U+034F) and reads `‹` `›` as `<` `>`. `build_prompt`
+  gains an optional `repo_root=`; existing calls are unchanged.
 - **`fleet_state.update_crash(crash_dir, **fields)`**: atomic merge into
   `crash.json` that never raises; a failure is logged as a warning.
   `mark_crash_emailed` now uses it.

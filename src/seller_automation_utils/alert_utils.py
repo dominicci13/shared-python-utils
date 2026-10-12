@@ -1,9 +1,10 @@
-"""Crash handling for fleet automations: capture, archive, clean up, explain, alert.
+"""Crash handling for fleet automations: capture, archive, clean up, explain, alert, record.
 
 :func:`handle_crash` is the one entry point. It captures the browser state,
 archives it through :mod:`fleet_state` before anything else can fail, kills only
 the processes this automation started, asks :mod:`crash_explainer` for a
-plain-English summary, and emails all of it via Outlook. The summary block sits
+plain-English summary, emails all of it via Outlook, and then writes the
+crash's knowledge-base note through :mod:`crash_notes`. The summary block sits
 above the unchanged traceback; when there is no summary, one "AI summary
 unavailable: <reason>" line takes its place and the email still goes out.
 """
@@ -20,7 +21,7 @@ from datetime import datetime
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
-from seller_automation_utils import _winproc, crash_explainer, excel_utils, fleet_state, outlook
+from seller_automation_utils import _winproc, crash_explainer, crash_notes, excel_utils, fleet_state, outlook
 from seller_automation_utils.config_utils import get_env
 
 log = logging.getLogger(__name__)
@@ -35,6 +36,10 @@ MAX_FRAME_DEPTH = 3
 # Added to CRASH_AI_TIMEOUT for the AI step as a whole: git, file reads and codex's own kill wait
 # run outside codex's timeout.
 _AI_DEADLINE_SLACK = 30
+
+# Seconds for the knowledge-base note step. The vault is a OneDrive folder, so a sync lock or a slow
+# disk could otherwise hold the crashed process open indefinitely after the email went out.
+_NOTE_DEADLINE = 60
 
 
 def _collect_dom(driver: object, max_depth: int = MAX_FRAME_DEPTH) -> str:
@@ -182,15 +187,23 @@ def handle_crash(driver: object | None, error_traceback: str, automation_name: s
     3. Force-kill the Chrome, driver and Excel processes **this automation** started
        (1.8.8+; see ``_kill_own_processes``). Other automations' processes, and the
        user's own Chrome and Excel, are left alone.
-    4. Ask an AI model for a plain-English summary (``crash_explainer``, at most
-       ``CRASH_AI_TIMEOUT`` + 30 seconds for the whole step; skipped outright
-       when ``CRASH_AI=0``) and record it, or why there is none, in
-       ``crash.json``.
+    4. Find the crashed repo's checkout from the traceback
+       (``crash_explainer.find_repo_root``), then ask an AI model for a
+       plain-English summary (``crash_explainer``, at most
+       ``CRASH_AI_TIMEOUT`` + 30 seconds for the whole step; skipped outright,
+       git included, when ``CRASH_AI=0``) and record it, or why there is none,
+       in ``crash.json``.
     5. Send the crash report via Outlook: the summary block (or one "AI summary
        unavailable" line) above the tabs and traceback.
+    6. Write the crash's knowledge-base note (``crash_notes.write_crash_note``,
+       at most 60 seconds, the repo lookup included when step 4 did not finish
+       it) and record its path as ``kb_note``, or why there is none as
+       ``kb_note_error``, in ``crash.json``. ``CRASH_AI=0`` does not skip it:
+       the note is written by code and then says the summary was disabled.
 
-    A Ctrl+C during the AI step becomes the reason "interrupted"; steps 4 and 5
-    still finish and the ``KeyboardInterrupt`` is re-raised at the end.
+    A Ctrl+C during step 4 or 6 becomes the reason "interrupted" for that
+    step; every later step still runs and the first ``KeyboardInterrupt`` is
+    re-raised at the end.
 
     The archive is written *before* anything else can fail, and the screenshot
     and DOM are moved into it rather than deleted. The email goes out over
@@ -201,7 +214,9 @@ def handle_crash(driver: object | None, error_traceback: str, automation_name: s
 
     The cleanup runs before the AI step so a stuck Excel or Chrome is freed
     during the wait rather than after it. The AI step can only cost time: any
-    failure there becomes a reason line and the email still goes out.
+    failure there becomes a reason line and the email still goes out. The note
+    comes last for the same reason: a OneDrive or disk problem in the vault
+    must never delay or lose the email.
 
     If the driver was never initialized (e.g., Chrome failed to launch), the
     function skips the screenshot, DOM capture, and tab collection, and sends the
@@ -216,8 +231,8 @@ def handle_crash(driver: object | None, error_traceback: str, automation_name: s
 
     Raises:
         Whatever ``get_env`` raises when ``ALERT_EMAIL`` is not set, and the
-            ``KeyboardInterrupt`` caught during the AI step, once the email is
-            sent. Nothing else raises.
+            ``KeyboardInterrupt`` caught during step 4 or 6, once the email
+            is sent and the note step is over. Nothing else raises.
     """
     alert_email = get_env("ALERT_EMAIL", required=True)
     crashed_at = datetime.now().astimezone()
@@ -274,8 +289,11 @@ def handle_crash(driver: object | None, error_traceback: str, automation_name: s
         log.exception("Cleaning up this automation's processes failed.")
 
     interrupt: KeyboardInterrupt | None = None
+    found_root: list[Path] = []
     try:
-        summary, reason = _ai_summary(crash_dir, name, automation_name, error_traceback, crashed_at, log_tail_text)
+        summary, reason = _ai_summary(
+            crash_dir, name, automation_name, error_traceback, crashed_at, log_tail_text, found_root
+        )
     except KeyboardInterrupt as exc:
         # Ctrl+C during the wait must not cost the crash its email; it is honoured once that is sent.
         interrupt = exc
@@ -326,6 +344,19 @@ def handle_crash(driver: object | None, error_traceback: str, automation_name: s
         # the archive already holds everything.
         log.error("Crash email failed — the crash is archived on disk regardless.")
 
+    try:
+        note, note_error = _crash_note(crash_dir, error_traceback, found_root, log_tail_text)
+    except KeyboardInterrupt as exc:
+        # The email is already out; only the note is given up, and the first Ctrl+C is the one raised.
+        if interrupt is None:
+            interrupt = exc
+        log.warning("Crash note not written: interrupted.")
+        note, note_error = None, "interrupted"
+    if note is not None:
+        fleet_state.update_crash(crash_dir, kb_note=str(note))
+    else:
+        fleet_state.update_crash(crash_dir, kb_note_error=note_error)
+
     log.success("Crash handling complete.")
     if interrupt is not None:
         raise interrupt
@@ -353,13 +384,14 @@ def _ai_summary(
     traceback_text: str,
     crashed_at: datetime,
     log_text: str,
+    found_root: list[Path],
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Ask the AI model to explain the crash, within one overall deadline. Raises only KeyboardInterrupt.
 
-    Building the prompt and running codex happen in a daemon thread, joined for
-    at most ``crash_ai_timeout() + 30`` seconds. codex has its
-    own timeout and kill inside that thread; the deadline also covers a hang
-    before codex starts (git, a slow disk, the knowledge base).
+    Finding the repo, building the prompt and running codex happen in a daemon
+    thread, joined for at most ``crash_ai_timeout() + 30`` seconds. codex has
+    its own timeout and kill inside that thread; the deadline also covers a
+    hang before codex starts (git, a slow disk, the knowledge base).
 
     Args:
         crash_dir (Path | None): The crash archive, or None when archiving failed.
@@ -368,6 +400,8 @@ def _ai_summary(
         traceback_text (str): The formatted traceback.
         crashed_at (datetime): When the crash happened, timezone-aware.
         log_text (str): The log tail read before handle_crash logged anything.
+        found_root (list[Path]): Receives the crashed repo's checkout once
+            this step has found it, for the note step after the email.
 
     Returns:
         tuple[dict[str, Any] | None, str | None]: ``(summary, None)`` or
@@ -387,6 +421,13 @@ def _ai_summary(
 
     def work() -> None:
         try:
+            repo_root = _repo_root(traceback_text)
+            if repo_root is not None:
+                found_root.append(repo_root)
+            kb_dir = crash_explainer.default_kb_dir()
+            # Same rule as the note step: an unusable folder is never touched; the prompt goes without it.
+            if kb_dir is not None and _kb_dir_refusal(kb_dir, repo_root):
+                kb_dir = None
             prompt = crash_explainer.build_prompt(
                 crash_dir,
                 name=name,
@@ -394,9 +435,10 @@ def _ai_summary(
                 traceback_text=traceback_text,
                 crashed_at=crashed_at,
                 log_file=crash_explainer.active_log_file(),
-                kb_dir=crash_explainer.default_kb_dir(),
+                kb_dir=kb_dir,
                 crash_root=fleet_state.crash_root(),
                 log_text=log_text,
+                repo_root=repo_root,
             )
             outcome.append(crash_explainer.explain(prompt, crash_dir / "screenshot.png"))
         except BaseException as exc:  # anything escaping a thread would leave no answer and no reason
@@ -425,6 +467,115 @@ def _ai_summary(
         return None, reason
     log.info(f"AI summary ready in {elapsed:.1f} s.")
     return summary, None
+
+
+def _repo_root(traceback_text: str) -> Path | None:
+    """:func:`crash_explainer.find_repo_root`, or None when it fails. Raises only KeyboardInterrupt.
+
+    Only called inside the AI and note steps' deadline threads, never before
+    the email on the main thread: git on this host can outlast its own timeout.
+    """
+    try:
+        return crash_explainer.find_repo_root(traceback_text)
+    except Exception:
+        log.warning("Could not find the crashed repo from the traceback.", exc_info=True)
+        return None
+
+
+def _crash_note(
+    crash_dir: Path | None, traceback_text: str, found_root: list[Path], log_text: str
+) -> tuple[Path | None, str | None]:
+    """Write the crash's knowledge-base note, within one deadline. Raises only KeyboardInterrupt.
+
+    Finding the vault, finding the repo when the AI step did not, and writing
+    the note happen in a daemon thread, joined for at most
+    :data:`_NOTE_DEADLINE` seconds. ``CRASH_AI`` is not consulted: the note is
+    written by code, and records why there is no summary.
+
+    Args:
+        crash_dir (Path | None): The crash archive, or None when archiving failed.
+        traceback_text (str): The formatted traceback, to find the repo from.
+        found_root (list[Path]): The crashed repo's checkout as the AI step
+            found it, or empty when it did not get that far.
+        log_text (str): The log tail read before handle_crash logged anything.
+
+    Returns:
+        tuple[Path | None, str | None]: ``(note, None)``, or ``(None, reason)``:
+            no archive, no knowledge base folder, a folder refused by
+            :func:`_kb_dir_refusal`, a refusal or failure from ``crash_notes``,
+            or ``"timed out after N s"``.
+
+    Raises:
+        KeyboardInterrupt: Ctrl+C while waiting; ``handle_crash`` handles it.
+    """
+    if crash_dir is None:
+        log.warning("Crash note not written: crash archive unavailable.")
+        return None, "crash archive unavailable"
+    outcome: list[tuple[Path | None, str | None]] = []
+
+    def work() -> None:
+        try:
+            kb_dir = crash_explainer.default_kb_dir()
+            if kb_dir is None:
+                outcome.append((None, "no knowledge base folder"))
+                return
+            repo_root = found_root[0] if found_root else _repo_root(traceback_text)
+            if refusal := _kb_dir_refusal(kb_dir, repo_root):
+                outcome.append((None, refusal))
+                return
+            outcome.append(
+                crash_notes._write_note(crash_dir, kb_dir=kb_dir, repo_root=repo_root, log_tail_text=log_text)
+            )
+        except BaseException as exc:  # anything escaping a thread would leave no answer and no reason
+            log.exception("The crash note step failed.")
+            outcome.append((None, f"unexpected error: {type(exc).__name__}"))
+
+    log.info("Writing the crash note to the knowledge base.")
+    worker = threading.Thread(target=work, name="crash-kb-note", daemon=True)
+    try:
+        worker.start()
+    except RuntimeError as exc:
+        log.exception("Could not start the crash note step.")
+        return None, f"unexpected error: {type(exc).__name__}"
+    worker.join(_NOTE_DEADLINE)
+    if worker.is_alive():
+        log.warning(f"Crash note not written: no answer within {_NOTE_DEADLINE} s.")
+        return None, f"timed out after {_NOTE_DEADLINE} s"
+    note, reason = outcome[0]
+    if note is None:
+        reason = reason or "no reason given"
+        log.warning(f"Crash note not written: {reason}")
+        return None, reason
+    log.info(f"Crash note written to [cyan]{note}[/cyan].")
+    return note, None
+
+
+def _kb_dir_refusal(kb_dir: Path, repo_root: Path | None) -> str | None:
+    """Why no crash note may be written under ``kb_dir``, or None when one may.
+
+    Args:
+        kb_dir (Path): The knowledge base folder, normally from ``CRASH_AI_KB_DIR``.
+        repo_root (Path | None): The crashed repo's checkout, when known.
+
+    Returns:
+        str | None: ``"knowledge base folder not usable: <why>"`` for a
+            network (UNC), relative or inside-the-repo path,
+            ``"knowledge base folder not found: <path>"`` when it does not
+            exist, or None.
+    """
+    # Checked as text before any filesystem call: is_dir() on \\host\share already connects to that host.
+    if str(kb_dir).replace("/", "\\").startswith("\\\\"):
+        return "knowledge base folder not usable: a network (UNC) path"
+    if not kb_dir.is_absolute():
+        return "knowledge base folder not usable: a relative path"
+    # A note inside the crashed repo is one `git add` away from being published with its code.
+    resolved = crash_explainer._resolved
+    if repo_root is not None and resolved(kb_dir).is_relative_to(resolved(repo_root)):
+        return "knowledge base folder not usable: inside the crashed repo"
+    # A mistyped CRASH_AI_KB_DIR must not create a stray vault wherever it points.
+    if not kb_dir.is_dir():
+        return f"knowledge base folder not found: {kb_dir}"
+    return None
 
 
 # Python's own frame line. Only matched inside a traceback's frames section: a multi-line exception

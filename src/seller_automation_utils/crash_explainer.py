@@ -3,9 +3,10 @@
 :func:`alert_utils.handle_crash` archives every crash to
 ``crashes\\<name>\\<timestamp>\\`` (see :mod:`fleet_state`). This module turns
 that archive, plus what the crashing process can still see (its git checkout,
-its own log file, the knowledge-base note for its repo), into one prompt for a
-model that answers in the shape of :data:`RESPONSE_SCHEMA`. ``handle_crash``
-puts the answer above the raw traceback in the crash email.
+its own log file, the knowledge-base note for its repo and its older crash
+notes), into one prompt for a model that answers in the shape of
+:data:`RESPONSE_SCHEMA`. ``handle_crash`` puts the answer above the raw
+traceback in the crash email.
 
 Code is read from **disk**, not from git history: a live crash ran whatever is
 in the working tree, committed or not. ``git ls-files`` decides which repo
@@ -22,7 +23,8 @@ last):`` header and its exception line count as frames. Frames on a network
 path are dropped before any filesystem
 call, and a library frame is read only from inside the installed package that
 is running. URL query strings and token-shaped values are masked in every
-captured slot (traceback, log tail, page text, previous crashes).
+captured slot (traceback, log tail, page text, previous crashes, older crash
+notes), and fence markers are removed from each.
 
 Missing or malformed inputs (no git repo, no log file, no page capture or one
 that will not parse, no vault) become a short phrase in the prompt, never an
@@ -49,7 +51,7 @@ import unicodedata
 from collections import deque
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from html.parser import HTMLParser
 from logging.handlers import RotatingFileHandler
 from pathlib import Path, PurePosixPath
@@ -66,6 +68,9 @@ __all__ = [
     "FILE_CAP",
     "PAGE_TEXT_CAP",
     "KB_NOTE_CAP",
+    "PREVIOUS_WHY_CAP",
+    "OLDER_NOTES_AFTER_DAYS",
+    "OLDER_NOTES_LIMIT",
     "KB_DIR_ENV",
     "find_repo_root",
     "code_files",
@@ -73,6 +78,7 @@ __all__ = [
     "log_tail",
     "page_text",
     "previous_crashes",
+    "older_crash_notes",
     "kb_note_path",
     "kb_note",
     "default_kb_dir",
@@ -92,6 +98,11 @@ SIZE_CAP = 150_000
 FILE_CAP = 200_000
 PAGE_TEXT_CAP = 20_000
 KB_NOTE_CAP = 50_000
+# Each previous crash's AI "why", so one line cannot crowd out the others.
+PREVIOUS_WHY_CAP = 200
+# The archive is pruned after 30 days (fleet_state.CRASH_RETENTION_DAYS), so older history comes from the KB.
+OLDER_NOTES_AFTER_DAYS = 30
+OLDER_NOTES_LIMIT = 5
 KB_DIR_ENV = "CRASH_AI_KB_DIR"
 # Top-level knowledge-base folder of the per-crash notes (crash_notes.py).
 CRASH_NOTES_DIR = "Crashes"
@@ -109,7 +120,10 @@ _TRACEBACK_START = "Traceback (most recent call last):"
 _CLOUD_ONLY_ATTRIBUTES = 0x400000 | 0x1000  # FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_OFFLINE
 _PLACEHOLDER = re.compile(r"\{\{(\w+)\}\}")
 _FENCE = re.compile(r"<<<\s*UNTRUSTED|UNTRUSTED\s*>>>", re.I)
-_ZERO_WIDTH = re.compile("[\u200b-\u200d\u2060\ufeff]")
+# U+034F is a combining mark, not a format character (Cf), but it renders as nothing all the same.
+_INVISIBLE = "\u034f"
+# Angle quotation marks have no NFKC decomposition, yet read as a fence's < and >.
+_ANGLE_LOOKALIKES = str.maketrans({"\u2039": "<", "\u203a": ">"})
 _EXCEPTION_LINE = re.compile(r"^[\w.]+(Error|Exception)\b")
 # The section labels alert_utils writes into dom.txt; an iframe label carries the frame's signed src URL.
 _DOM_LABEL = re.compile(r"^(?:=+|MAIN DOCUMENT\b.*)$", re.M)
@@ -213,6 +227,10 @@ The browser screenshot at crash time is attached as an image.
 {{previous_crashes}}
 UNTRUSTED>>>
 
+<<<UNTRUSTED older crash notes for this repo (from the knowledge base)
+{{older_crash_notes}}
+UNTRUSTED>>>
+
 ## Background notes (written by the developer)
 
 ### The automation's knowledge base note
@@ -308,19 +326,33 @@ RESPONSE_SCHEMA: dict[str, Any] = {
 
 
 def _git(repo: Path, *args: str) -> str | None:
-    """Run one git command in ``repo``; None when git is missing, fails or times out."""
+    """Run one git command in ``repo``; None when git is missing, fails or times out.
+
+    On timeout the whole process tree is killed (:func:`_kill_tree`): Git for
+    Windows' ``git.exe`` can be a launcher whose real git is a child, and
+    killing only the launcher leaves that child running. Output goes to a
+    file, not a pipe, so an orphan still holding it cannot block the read.
+    """
     try:
-        result = subprocess.run(
-            ["git", "-C", str(repo), *args],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=GIT_TIMEOUT,
-        )
-    except (OSError, ValueError, subprocess.TimeoutExpired):
+        with tempfile.TemporaryFile() as output:
+            proc = subprocess.Popen(
+                ["git", "-C", str(repo), *args],
+                stdin=subprocess.DEVNULL,
+                stdout=output,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            try:
+                proc.wait(timeout=GIT_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                _kill_tree(proc)
+                return None
+            if proc.returncode != 0:
+                return None
+            output.seek(0)
+            return output.read().decode("utf-8", errors="replace")
+    except (OSError, ValueError):
         return None
-    return result.stdout if result.returncode == 0 else None
 
 
 def _resolved(path: Path) -> Path:
@@ -635,8 +667,11 @@ def previous_crashes(crash_root: Path, repo_name: str, before: datetime, current
             is never listed as its own predecessor.
 
     Returns:
-        str: Up to five ``<when>  <last exception line>`` lines with secrets
-            masked, or ``"None archived."``.
+        str: Up to five ``<when>  <last exception line>  why: <AI why>`` lines,
+            or ``"None archived."``. The why is the crash's own
+            ``ai_summary.why`` from its ``crash.json`` on one line, capped at
+            :data:`PREVIOUS_WHY_CAP` characters, or ``unavailable``. Secrets
+            are masked and fence markers removed from both.
     """
     marker = f"\\{repo_name.casefold()}\\"
     current = _resolved(current_dir) if current_dir is not None else None
@@ -656,8 +691,39 @@ def previous_crashes(crash_root: Path, repo_name: str, before: datetime, current
         if stamp >= before.timestamp() or marker not in traceback_text.casefold():
             continue
         last = [line for line in traceback_text.splitlines() if _EXCEPTION_LINE.match(line)]
-        rows.append((stamp, f"{when:%Y-%m-%d %H:%M}  {_redact(last[-1] if last else '?')[:200]}"))
+        summary = data.get("ai_summary")
+        why = summary.get("why") if isinstance(summary, dict) else None
+        # Model text from a model that read a scraped page: masked, capped, then defanged last.
+        why = _defang(_redact(" ".join(str(why).split()))[:PREVIOUS_WHY_CAP]) if why else "unavailable"
+        exception = _defang(_redact(last[-1] if last else "?")[:200])
+        rows.append((stamp, f"{when:%Y-%m-%d %H:%M}  {exception}  why: {why}"))
     return "\n".join(row for _, row in sorted(rows)[-5:]) or "None archived."
+
+
+def older_crash_notes(kb_dir: Path | None, repo_name: str, crashed_at: datetime) -> str:
+    """The repo's knowledge-base crash notes from before the archive's 30 days, for the prompt.
+
+    Args:
+        kb_dir (Path | None): Root of the Markdown knowledge base.
+        repo_name (str): Directory name of the crashed repo; "" finds nothing.
+        crashed_at (datetime): When this crash happened.
+
+    Returns:
+        str: Up to :data:`OLDER_NOTES_LIMIT` lines from
+            :func:`crash_notes.recent_crash_notes` for notes dated more than
+            :data:`OLDER_NOTES_AFTER_DAYS` days before ``crashed_at``, newest
+            first, or ``"None found."``. Untrusted text, not yet masked.
+    """
+    if not repo_name:
+        return "None found."
+    # Imported here: crash_notes imports this module at load time.
+    from seller_automation_utils import crash_notes
+
+    try:
+        before = (crashed_at - timedelta(days=OLDER_NOTES_AFTER_DAYS)).date()
+    except OverflowError:
+        return "None found."
+    return crash_notes.recent_crash_notes(kb_dir, repo_name, before=before, limit=OLDER_NOTES_LIMIT)
 
 
 def kb_note_path(kb_dir: Path | None, repo_name: str) -> Path | None:
@@ -765,13 +831,17 @@ def _redact(text: str) -> str:
 def _defang(text: str) -> str:
     """Remove fence markers from captured text so it cannot close its UNTRUSTED block early.
 
-    NFKC folds look-alikes such as a fullwidth ``>`` into ASCII, and zero-width
-    characters are dropped before matching, since the model reads both as the
-    plain marker. Applied last, after truncation and redaction, so the text
-    that was checked is the text that reaches the prompt.
+    NFKC folds look-alikes such as a fullwidth ``>`` into ASCII, the angle
+    quotation marks U+2039 and U+203A become ``<`` and ``>``, and invisible
+    characters (every format character, Unicode category Cf: zero-width, soft
+    hyphen, bidi controls, tags; plus U+034F) are dropped before matching,
+    since the model reads all of them as the plain marker. Applied last, after
+    truncation and redaction, so the text that was checked is the text that
+    reaches the prompt.
     """
-    text = _ZERO_WIDTH.sub("", unicodedata.normalize("NFKC", text))
-    return _FENCE.sub("(fence marker removed)", text)
+    text = unicodedata.normalize("NFKC", text)
+    text = "".join(char for char in text if char != _INVISIBLE and unicodedata.category(char) != "Cf")
+    return _FENCE.sub("(fence marker removed)", text.translate(_ANGLE_LOOKALIKES))
 
 
 def build_prompt(
@@ -785,6 +855,7 @@ def build_prompt(
     kb_dir: Path | None,
     crash_root: Path,
     log_text: str | None = None,
+    repo_root: Path | None = None,
 ) -> str:
     """Fill :data:`PROMPT_TEMPLATE` for one live crash.
 
@@ -799,19 +870,23 @@ def build_prompt(
         traceback_text (str): The formatted traceback of the crash.
         crashed_at (datetime): When the crash happened.
         log_file (Path | None): This process's log file.
-        kb_dir (Path | None): Knowledge-base root, normally :func:`default_kb_dir`.
+        kb_dir (Path | None): Knowledge-base root, normally :func:`default_kb_dir`;
+            source of the automation's note and of :func:`older_crash_notes`.
         crash_root (Path): The crash archive root, for previous crashes.
         log_text (str | None): The log tail already read, normally
             :func:`log_tail` output taken before the crash handler logged
             anything; used instead of reading ``log_file``, which by now ends
             with the handler's own lines. Masked again here; empty becomes
             "No log file found.".
+        repo_root (Path | None): The crashed repo's checkout, when the caller
+            already found it with :func:`find_repo_root`; None finds it here.
 
     Returns:
         str: The prompt. Every missing, unreadable or malformed input becomes
             a short phrase instead of an exception.
     """
-    repo_root = find_repo_root(traceback_text)
+    if repo_root is None:
+        repo_root = find_repo_root(traceback_text)
     repo_name = repo_root.name if repo_root is not None else ""
     memory = _read(repo_root / "tasks" / "MEMORY.md") if repo_root is not None else None
     slots = {
@@ -825,6 +900,7 @@ def build_prompt(
         "previous_crashes": _defang(
             previous_crashes(crash_root, repo_name, crashed_at, crash_dir) if repo_name else "None archived."
         ),
+        "older_crash_notes": _defang(_redact(older_crash_notes(kb_dir, repo_name, crashed_at))),
         "kb_note": kb_note(kb_dir, repo_name) if repo_name else "None found.",
         "memory_md": memory or "None found.",
         "files": code_files(repo_root, traceback_text),
@@ -1033,7 +1109,7 @@ def schema_problem(value: Any, schema: dict[str, Any], where: str = "answer") ->
 
 
 def _kill_tree(proc: subprocess.Popen[bytes]) -> None:
-    """Kill codex and everything it started, and nothing else.
+    """Kill codex, or a timed-out git, and everything it started, and nothing else.
 
     Not ``taskkill /t`` and never by image name: the first follows recorded
     parent pids into stale branches, the second hits other automations (see
@@ -1052,7 +1128,7 @@ def _kill_tree(proc: subprocess.Popen[bytes]) -> None:
     try:
         proc.wait(timeout=_KILL_WAIT)
     except subprocess.TimeoutExpired:
-        log.warning(f"codex (pid {proc.pid}) had not exited {_KILL_WAIT} s after being killed.")
+        log.warning(f"Child process {proc.pid} had not exited {_KILL_WAIT} s after being killed.")
     deadline = time.monotonic() + _DESCENDANT_WAIT
     for pid, _exe, created in descendants:
         while _winproc.creation_time(pid) == created and time.monotonic() < deadline:
