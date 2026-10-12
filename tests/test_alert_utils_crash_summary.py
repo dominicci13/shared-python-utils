@@ -770,6 +770,19 @@ def test_the_note_is_written_after_the_email(harness, kb) -> None:
     assert SUMMARY["why"] in note.read_text(encoding="utf-8")
 
 
+def test_the_screenshot_reaches_the_model_and_the_email_but_never_the_vault(harness, kb) -> None:
+    alert_utils.handle_crash(FakeDriver(), TRACEBACK, DISPLAY)
+
+    screenshot = harness.crash_dir / "screenshot.png"
+    assert harness.screenshot == screenshot and screenshot.read_bytes() == b"\x89PNG fake"
+    assert "screenshot.png" in [Path(p).name for p in harness.sent[0]["attachments"]]
+    [note] = _notes(kb)
+    assert [path for path in kb.rglob("*") if path.is_file()] == [note]
+    text = note.read_text(encoding="utf-8")
+    assert "![[" not in text and ".png" not in text
+    assert str(harness.crash_dir) in text
+
+
 def test_the_repo_root_is_found_once_and_shared_by_the_prompt_and_the_note(harness, kb) -> None:
     alert_utils.handle_crash(None, TRACEBACK, DISPLAY)
 
@@ -915,6 +928,30 @@ def test_a_kb_folder_inside_the_crashed_repo_is_refused(harness, kb, tmp_path, m
     assert alert_utils._kb_dir_refusal(Path(str(inside).upper()), repo) == (
         "knowledge base folder not usable: inside the crashed repo"
     )
+
+
+@pytest.mark.parametrize("where", ["kb inside the archive", "archive inside the kb"])
+def test_a_kb_folder_overlapping_the_crash_archive_is_refused(harness, kb, monkeypatch, where) -> None:
+    state = fleet_state.state_root()
+    state.mkdir(parents=True, exist_ok=True)
+    folder = state / "kb" if where == "kb inside the archive" else state.parent
+    folder.mkdir(exist_ok=True)
+    before = sorted(folder.rglob("*"))
+    monkeypatch.setattr(crash_explainer, "default_kb_dir", lambda: folder)
+
+    alert_utils.handle_crash(None, TRACEBACK, DISPLAY)
+
+    assert harness.record()["kb_note_error"] == "knowledge base folder not usable: overlaps the crash archive"
+    assert "note" not in harness.events
+    assert harness.prompt_kwargs["kb_dir"] is None
+    if where == "kb inside the archive":
+        assert sorted(folder.rglob("*")) == before
+    # Windows paths compare without case.
+    assert alert_utils._kb_dir_refusal(Path(str(folder).upper()), None) == (
+        "knowledge base folder not usable: overlaps the crash archive"
+    )
+    # A sibling of the archive is not an overlap.
+    assert alert_utils._kb_dir_refusal(kb, None) is None
 
 
 def test_a_refused_note_records_why_and_is_left_alone(harness, kb) -> None:

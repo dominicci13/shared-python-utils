@@ -49,9 +49,16 @@
   error per repo per day at `Crashes/<repo>/<YYYY-MM-DD> <ExceptionType> in
   <file>-<function>.md`: frontmatter, an AI-generated label, the latest AI
   summary (or `AI summary unavailable: <reason>`), every occurrence's time and
-  archive folder, and for the first 10 occurrences their screenshot (copied
-  beside the note, never over a file the note does not own), traceback, open
-  tabs and log tail. The same error on the same day adds
+  archive folder, and for the first 10 occurrences their traceback, open
+  tabs and log tail. **No screenshot enters the knowledge base** (Brian,
+  2026-10-12): a portal screenshot can show buyer details and the vault syncs
+  to OneDrive and is kept indefinitely, so the note embeds no image and
+  `screenshot.png` is never written to the knowledge base; it stays in the
+  crash archive (30 days for live crashes), whose folder each occurrence
+  names, and is attached to the `[CRASH]` email; the AI model still receives
+  it. A record written
+  before this rule may name a screenshot; the next write drops the name and
+  renders no embed. The same error on the same day adds
   an occurrence. The note is regenerated from a one-line JSON record at its
   end; a note whose record is unreadable, or that OneDrive keeps online-only,
   is never overwritten. Model text has wikilinks, embeds, links, HTML,
@@ -79,7 +86,8 @@
   `CRASH_AI=0` (the note then says the summary was disabled). `crash.json` gains `kb_note` (the note's path) or
   `kb_note_error` (the reason); a `CRASH_AI_KB_DIR` that does not exist is
   refused, never created, and so is one that is relative, a network (UNC)
-  path (refused before it is touched) or inside the crashed repo. A writer
+  path (refused before it is touched), inside the crashed repo, or
+  overlapping the crash archive (either folder inside the other). A writer
   abandoned at the deadline can leave a `.<note>.*.tmp` file; the next write
   to that folder deletes any older than 10 minutes. A failing, hung or interrupted note step cannot
   delay or lose the email, which has already gone out; Ctrl+C there is

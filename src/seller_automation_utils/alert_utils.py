@@ -559,7 +559,8 @@ def _kb_dir_refusal(kb_dir: Path, repo_root: Path | None) -> str | None:
 
     Returns:
         str | None: ``"knowledge base folder not usable: <why>"`` for a
-            network (UNC), relative or inside-the-repo path,
+            network (UNC), relative or inside-the-repo path, or one that
+            overlaps the crash archive (``fleet_state.state_root()``),
             ``"knowledge base folder not found: <path>"`` when it does not
             exist, or None.
     """
@@ -572,6 +573,10 @@ def _kb_dir_refusal(kb_dir: Path, repo_root: Path | None) -> str | None:
     resolved = crash_explainer._resolved
     if repo_root is not None and resolved(kb_dir).is_relative_to(resolved(repo_root)):
         return "knowledge base folder not usable: inside the crashed repo"
+    # Notes in the archive would be pruned with it; an archive in the vault would sync screenshots to OneDrive.
+    state = resolved(fleet_state.state_root())
+    if resolved(kb_dir).is_relative_to(state) or state.is_relative_to(resolved(kb_dir)):
+        return "knowledge base folder not usable: overlaps the crash archive"
     # A mistyped CRASH_AI_KB_DIR must not create a stray vault wherever it points.
     if not kb_dir.is_dir():
         return f"knowledge base folder not found: {kb_dir}"

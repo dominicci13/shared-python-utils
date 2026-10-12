@@ -122,6 +122,11 @@ def _data(text: str) -> dict[str, object]:
     return json.loads(lines[start + 2])
 
 
+def _pngs(kb: Path) -> list[Path]:
+    """Every file under the vault whose name ends in .png, in any case."""
+    return [path for path in kb.rglob("*") if path.name.casefold().endswith(".png")]
+
+
 # ── error_key ──────────────────────────────────────────────────────────────
 
 def test_error_key_takes_the_innermost_repo_frame_and_strips_the_module_path(repo):
@@ -265,21 +270,23 @@ def test_same_error_same_day_gives_one_note_with_two_occurrences(tmp_path, repo,
     assert front["occurrences"] == 2
     assert front["confidence"] == "high"
     assert front["ai_why"] == "The portal was down."
-    assert (note.parent / f"{note.stem}.png").read_bytes() == b"first"
-    assert (note.parent / f"{note.stem} 2.png").read_bytes() == b"second"
+    assert _pngs(kb) == []
+    assert (first / "screenshot.png").read_bytes() == b"first"
+    assert (second / "screenshot.png").read_bytes() == b"second"
     assert re.findall(r"^## Occurrence \d+: .*$", text, re.M) == [
         "## Occurrence 1: 2026-03-02 08:15:02",
         "## Occurrence 2: 2026-03-02 09:40:11",
     ]
-    assert f"![[{note.stem}.png]]" in text and f"![[{note.stem} 2.png]]" in text
+    assert "![[" not in text
     body = text.split("\n## Record\n", 1)[0]
+    assert f"Archive: `{first}`" in body and f"Archive: `{second}`" in body
     assert body.count("### Traceback") == 2
     assert body.count("selenium.common.exceptions.TimeoutException: Message: timed out") == 2
     assert "step 1 done" in body and "step 2 done" in body
     assert str(first) in body and str(second) in body
 
 
-def test_different_errors_give_two_notes_each_with_traceback_and_screenshot(tmp_path, repo, kb):
+def test_different_errors_give_two_notes_each_with_traceback_and_no_screenshot(tmp_path, repo, kb):
     other = _traceback([(str(repo / "report.py"), "save")], "PermissionError: [Errno 13] locked")
     a = cn.write_crash_note(_crash(tmp_path, "20260302-081502", traceback_text=_timeout_traceback(repo)),
                             kb_dir=kb, repo_root=repo)
@@ -294,8 +301,8 @@ def test_different_errors_give_two_notes_each_with_traceback_and_screenshot(tmp_
     for note in (a, b):
         text = note.read_text(encoding="utf-8")
         assert "### Traceback" in text and "Traceback (most recent call last):" in text
-        assert f"![[{note.stem}.png]]" in text
-        assert (note.parent / f"{note.stem}.png").is_file()
+        assert "![[" not in text
+    assert _pngs(kb) == []
 
 
 def test_same_error_next_day_gives_a_new_note(tmp_path, repo, kb):
@@ -312,18 +319,78 @@ def test_writing_the_same_archive_twice_does_not_add_an_occurrence(tmp_path, rep
     note = cn.write_crash_note(crash, kb_dir=kb, repo_root=repo)
     cn.write_crash_note(crash, kb_dir=kb, repo_root=repo)
     assert _frontmatter(note.read_text(encoding="utf-8"))["occurrences"] == 1
-    assert not (note.parent / f"{note.stem} 2.png").exists()
+    assert _pngs(kb) == []
 
 
-def test_rewriting_an_archive_replaces_its_own_screenshot(tmp_path, repo, kb):
-    crash = _crash(tmp_path, "20260302-081502", traceback_text=_timeout_traceback(repo), screenshot=b"first")
-    note = cn.write_crash_note(crash, kb_dir=kb, repo_root=repo)
-    (crash / "screenshot.png").write_bytes(b"updated")
-    cn.write_crash_note(crash, kb_dir=kb, repo_root=repo)
-    assert (note.parent / f"{note.stem}.png").read_bytes() == b"updated"
+# ── screenshots stay in the local archive (Brian, 2026-10-12) ─────────────
+
+@pytest.mark.parametrize("scenario", ["one crash", "same error twice", "same archive rewritten", "past the detail cap"])
+def test_no_png_is_ever_written_under_the_kb(tmp_path, repo, kb, scenario):
+    """A screenshot can show buyer details; the vault syncs to OneDrive and keeps it forever."""
+    crashes = [_crash(tmp_path, "20260302-081502", traceback_text=_timeout_traceback(repo), screenshot=b"shot 1")]
+    if scenario == "same error twice":
+        crashes.append(_crash(tmp_path, "20260302-094011", traceback_text=_timeout_traceback(repo),
+                              at=DAY_ONE_LATER, screenshot=b"shot 2"))
+    elif scenario == "same archive rewritten":
+        crashes.append(crashes[0])
+    elif scenario == "past the detail cap":
+        crashes += [
+            _crash(tmp_path, f"20260302-10{number:02d}00", traceback_text=_timeout_traceback(repo),
+                   at=f"2026-03-02T10:{number:02d}:00-05:00", screenshot=f"shot {number}".encode())
+            for number in range(2, cn.DETAIL_CAP + 3)
+        ]
+
+    for crash in crashes:
+        note = cn.write_crash_note(crash, kb_dir=kb, repo_root=repo)
+        assert note is not None
+        # Checked after every write, not only the last: a later rewrite must not be what hides an earlier copy.
+        assert _pngs(kb) == []
+    assert sorted(path.name for path in note.parent.iterdir()) == [note.name]
+    text = note.read_text(encoding="utf-8")
+    assert "![[" not in text and ".png" not in text
+    assert all("screenshot" not in item for item in _data(text)["occurrences"])
+    for crash in crashes:
+        assert (crash / "screenshot.png").is_file()
+        assert str(crash) in text
 
 
-def test_a_screenshot_never_overwrites_a_file_the_note_does_not_own(tmp_path, repo, kb, caplog):
+@pytest.mark.parametrize("next_write", ["a new occurrence", "the same archive again"])
+def test_an_old_record_with_a_screenshot_name_regenerates_without_the_embed(tmp_path, repo, kb, next_write):
+    """A note written before 2026-10-12 lists ``screenshot`` per occurrence and embeds it."""
+    first = _crash(tmp_path, "20260302-081502", traceback_text=_timeout_traceback(repo), ai_summary=_summary())
+    note = cn.write_crash_note(first, kb_dir=kb, repo_root=repo, log_tail_text="step 1 done")
+    text = note.read_text(encoding="utf-8")
+    data = _data(text)
+    data["occurrences"][0]["screenshot"] = f"{note.stem}.png"
+    old_data_line = json.dumps(_data(text), ensure_ascii=True)
+    assert text.count(old_data_line) == 1
+    old = text.replace(old_data_line, json.dumps(data, ensure_ascii=True)).replace(
+        f"Archive: `{first}`\n", f"Archive: `{first}`\n\n![[{note.stem}.png]]\n"
+    )
+    assert f"![[{note.stem}.png]]" in old
+    note.write_bytes(old.encode("utf-8"))
+
+    if next_write == "a new occurrence":
+        crash = _crash(tmp_path, "20260302-094011", traceback_text=_timeout_traceback(repo), at=DAY_ONE_LATER,
+                       ai_summary=_summary(why="The portal was down."))
+        expected = 2
+    else:
+        crash, expected = first, 1
+    assert cn.write_crash_note(crash, kb_dir=kb, repo_root=repo, log_tail_text="step 2 done") == note
+
+    text = note.read_text(encoding="utf-8")
+    assert "![[" not in text and ".png" not in text
+    occurrences = _data(text)["occurrences"]
+    assert len(occurrences) == expected == _frontmatter(text)["occurrences"]
+    assert all("screenshot" not in item for item in occurrences)
+    assert str(first) in text and "Traceback (most recent call last):" in text
+    if next_write == "a new occurrence":
+        assert "step 1 done" in text and "step 2 done" in text
+    assert _pngs(kb) == []
+
+
+def test_a_png_already_beside_a_note_is_left_alone(tmp_path, repo, kb, caplog):
+    """No file the note does not write is touched: not overwritten, not deleted, not embedded."""
     note = cn.note_path(kb, "demo-repo", date(2026, 3, 2), "TimeoutException in report-download")
     note.parent.mkdir(parents=True)
     foreign = note.parent / f"{note.stem}.png"
@@ -333,9 +400,10 @@ def test_a_screenshot_never_overwrites_a_file_the_note_does_not_own(tmp_path, re
     with caplog.at_level(logging.WARNING, logger=cn.__name__):
         assert cn.write_crash_note(crash, kb_dir=kb, repo_root=repo) == note
     assert foreign.read_bytes() == b"foreign"
+    assert _pngs(kb) == [foreign]
     text = note.read_text(encoding="utf-8")
-    assert "![[" not in text and _data(text)["occurrences"][0]["screenshot"] is None
-    assert "is not this note's" in caplog.text
+    assert "![[" not in text and "screenshot" not in _data(text)["occurrences"][0]
+    assert not caplog.records
 
 
 def test_captured_fields_are_capped_keeping_the_end_of_traceback_and_log(tmp_path, repo, kb):
@@ -367,10 +435,10 @@ def test_only_the_first_occurrences_keep_their_details(tmp_path, repo, kb):
     assert _frontmatter(text)["ai_why"] == f"Why {total}."
     assert len(re.findall(r"^\| \d+ \| ", text, re.M)) == total
     assert len(re.findall(r"^## Occurrence \d+: ", text, re.M)) == cn.DETAIL_CAP
-    assert len(list(note.parent.glob("*.png"))) == cn.DETAIL_CAP
+    assert _pngs(kb) == []
+    assert all("screenshot" not in item for item in occurrences)
     for item in occurrences[cn.DETAIL_CAP:]:
         assert item["traceback"] is None and item["tabs"] is None and item["log_tail"] is None
-        assert item["screenshot"] is None
     assert occurrences[cn.DETAIL_CAP]["ai_summary"] is None
     assert occurrences[-1]["ai_summary"]["why"] == f"Why {total}."
     assert all(item["ai_summary"] is not None for item in occurrences[:cn.DETAIL_CAP])
@@ -504,6 +572,60 @@ def test_hostile_model_text_is_neutralized(tmp_path, repo, kb):
                    ai_summary=_summary(why=HOSTILE))
     cn.write_crash_note(again, kb_dir=kb, repo_root=repo)
     assert _frontmatter(note.read_text(encoding="utf-8"))["occurrences"] == 2
+
+
+def _two_occurrence_note(tmp_path: Path, repo: Path, kb: Path, **second: object) -> tuple[Path, Path]:
+    first = _crash(tmp_path, "20260302-081502", traceback_text=_timeout_traceback(repo), ai_summary=_summary())
+    note = cn.write_crash_note(first, kb_dir=kb, repo_root=repo)
+    later = _crash(tmp_path, "20260302-094011", traceback_text=_timeout_traceback(repo), at=DAY_ONE_LATER, **second)
+    assert cn.write_crash_note(later, kb_dir=kb, repo_root=repo) == note
+    return note, first
+
+
+@pytest.mark.parametrize("field", ["at", "why", "ai_summary_error"])
+def test_a_hand_edited_record_renders_inert_when_an_earlier_archive_is_rewritten(tmp_path, repo, kb, field):
+    """Rewriting the first archive leaves occurrence 2, read back from disk, as the latest."""
+    note, first = _two_occurrence_note(tmp_path, repo, kb, ai_summary=_summary())
+    text = note.read_text(encoding="utf-8")
+    data = _data(text)
+    crafted = "See ![[x.png]] and [[Secret]]"
+    if field == "at":
+        data["occurrences"][1]["at"] = "![[x.png]]"
+    elif field == "why":
+        data["occurrences"][1]["ai_summary"]["why"] = crafted
+    else:
+        data["occurrences"][1].update(ai_summary=None, ai_summary_error=crafted)
+    old_line = json.dumps(_data(text), ensure_ascii=True)
+    assert text.count(old_line) == 1
+    note.write_text(text.replace(old_line, json.dumps(data, ensure_ascii=True)), encoding="utf-8")
+
+    assert cn.write_crash_note(first, kb_dir=kb, repo_root=repo) == note
+
+    text = note.read_text(encoding="utf-8")
+    # The record line keeps what was stored; inside its JSON fence Obsidian renders none of it.
+    rendered = text.split(f"\n{cn.DATA_MARKER}\n", 1)[0]
+    assert "![[" not in rendered and "[[Secret" not in rendered
+    assert len(_data(text)["occurrences"]) == 2
+    if field == "at":
+        assert "## Occurrence 2: ! [ [x.png]]" in rendered
+    else:
+        assert "See ! [ [x.png]] and [ [Secret]]" in rendered
+
+
+@pytest.mark.parametrize("raw", [HOSTILE, "plain why", "line one\nline two", "a < b and `code`", "[[x]] www.example.invalid"])
+def test_stored_model_text_is_not_escaped_twice(raw):
+    once = cn._model_text(raw)
+    assert cn._stored_text(once) == once
+    assert cn._stored_text({"why": once, "line": 3, "file": None}) == {"why": once, "line": 3, "file": None}
+
+
+def test_a_read_back_summary_renders_as_it_did_when_written(tmp_path, repo, kb):
+    note, first = _two_occurrence_note(tmp_path, repo, kb, ai_summary=_summary(why=HOSTILE, how_to_fix=HOSTILE))
+    summary_section = note.read_text(encoding="utf-8").split("\n## Occurrences\n", 1)[0]
+
+    assert cn.write_crash_note(first, kb_dir=kb, repo_root=repo) == note
+
+    assert note.read_text(encoding="utf-8").split("\n## Occurrences\n", 1)[0] == summary_section
 
 
 def test_captured_text_cannot_break_out_of_its_fence(tmp_path, repo, kb):
@@ -761,3 +883,10 @@ def test_recent_crash_notes_cap_the_key_and_the_why_on_one_line(kb):
 def test_recent_crash_notes_none_before_the_date(tmp_path, repo, kb):
     _write_notes(tmp_path, repo, kb)
     assert cn.recent_crash_notes(kb, "demo-repo", date(2026, 3, 1)) == "None found."
+
+
+@pytest.mark.parametrize("text", ["[://x]]", "[[://x]]", "a[://b and ![://c"])
+def test_breaking_a_url_never_creates_a_wikilink(text) -> None:
+    out = cn._model_text(text)
+
+    assert "[[" not in out and "![" not in out

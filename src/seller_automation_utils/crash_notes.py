@@ -4,7 +4,15 @@ The crash archive (:mod:`fleet_state`) is pruned after 30 days; these notes are
 not. Each note sits at ``<kb>/Crashes/<repo>/<YYYY-MM-DD> <error key>.md`` and
 holds the record of every occurrence of that error on that day: the AI
 summary of the latest one (labelled AI-generated), and for each occurrence its
-time, archive folder, screenshot, traceback, open tabs and log tail (see Size).
+time, archive folder, traceback, open tabs and log tail (see Size).
+
+**No screenshots.** A portal screenshot can show buyer details, and the vault
+syncs to OneDrive and is kept indefinitely, so ``screenshot.png`` is never
+copied into it and a note embeds no image. The screenshot stays in the crash
+archive (30 days for live crashes), whose folder each occurrence names, and
+is attached to the ``[CRASH]`` email. A record
+written before this rule may still carry a ``screenshot`` name; it is dropped
+on the next write and never rendered.
 
 **How occurrences are stored.** The note is regenerated in full on every
 write. The data it is built from sits in the note itself, as one line of JSON
@@ -27,7 +35,7 @@ one source line so it cannot open a heading, a callout or a code block.
 Captured text has URL query strings and token-shaped values masked, as in the
 crash prompt, and each field is capped at :data:`CAPTURE_CAP` characters.
 
-**Size.** Only the first :data:`DETAIL_CAP` occurrences keep their screenshot,
+**Size.** Only the first :data:`DETAIL_CAP` occurrences keep their
 traceback, tabs and log tail; later ones add a row to the occurrences table
 and, while latest, the summary.
 
@@ -205,11 +213,13 @@ def _model_text(value: Any, cap: int = FIELD_CAP, line_break: str = "<br>") -> s
     text = text.replace("`", "&#96;")
     text = text.replace("\r\n", "\n").replace("\r", "\n").replace("<", "&lt;")
     # Lookaheads, not str.replace: "[[[" would leave a "[[" behind.
+    # Before the "[[" check: "[://x" would otherwise become "[[:]//x" after it.
+    text = text.replace("://", "[:]//")
     text = _DOUBLE_BRACKET.sub("[ ", text)
     text = _DOUBLE_PERCENT.sub("% ", text)
     # "key:: value" is a Dataview inline field: a page could plant "safe_to_rerun:: yes" into queries.
     text = _DOUBLE_COLON.sub(": ", text)
-    text = text.replace("![", "! [").replace("](", "] (").replace("://", "[:]//")
+    text = text.replace("![", "! [").replace("](", "] (")
     text = _WWW.sub(r"\1[.]", text)
     return line_break.join(line.strip() for line in text.split("\n"))
 
@@ -265,7 +275,6 @@ def _occurrence(crash_dir: Path, record: dict[str, Any], log_tail_text: str) -> 
     return {
         "at": str(record["at"]),
         "archive": str(crash_dir),
-        "screenshot": None,
         # Redact before capping, so a cut cannot split a secret into a shape the masks miss. The
         # error sits at the end of a traceback or log.
         "traceback": _redact(str(record.get("traceback") or ""))[-CAPTURE_CAP:],
@@ -294,18 +303,36 @@ def _read_data(note: Path) -> dict[str, Any] | None:
 
 
 def _local_time(at: str) -> str:
-    """``YYYY-MM-DD HH:MM:SS`` of an ISO timestamp, or the text itself when it does not parse."""
+    """``YYYY-MM-DD HH:MM:SS`` of an ISO timestamp, or the text made inert when it does not parse."""
     try:
         return f"{datetime.fromisoformat(at):%Y-%m-%d %H:%M:%S}"
     except ValueError:
-        return at
+        # Only a read-back record's time can fail to parse, and a hand-edited one can hold anything.
+        return _model_text(at, 64, " ")
+
+
+def _stored_text(value: Any) -> Any:
+    """Read-back model text made inert again, since the data line can be edited by hand.
+
+    Idempotent on what :func:`_model_text` already wrote: its ``<br>`` turns
+    back into a line break first, and nothing is cut, because escaping can
+    leave stored text longer than its cap. Dicts are walked; other values
+    pass through.
+    """
+    if isinstance(value, dict):
+        return {key: _stored_text(item) for key, item in value.items()}
+    if not isinstance(value, str):
+        return value
+    text = value.replace("<br>", "\n")
+    return _model_text(text, len(text))
 
 
 def _render(data: dict[str, Any], *, automation_link: str | None) -> str:
     """The whole note, from its data."""
     occurrences = data["occurrences"]
     latest = occurrences[-1]
-    summary = latest.get("ai_summary")
+    # Rewriting an earlier archive leaves a read-back occurrence as the latest.
+    summary = _stored_text(latest.get("ai_summary"))
     repo = data["repo"]
     front = {
         "type": "crash",
@@ -354,7 +381,7 @@ def _render(data: dict[str, Any], *, automation_link: str | None) -> str:
             "",
         ]
     else:
-        parts += [f"AI summary unavailable: {latest['ai_summary_error']}", ""]
+        parts += [f"AI summary unavailable: {_stored_text(str(latest['ai_summary_error']))}", ""]
 
     parts += ["## Occurrences", "", "| # | Time | Archive folder |", "|---|---|---|"]
     parts += [
@@ -366,8 +393,6 @@ def _render(data: dict[str, Any], *, automation_link: str | None) -> str:
     for number, item in enumerate(occurrences[:DETAIL_CAP], 1):
         parts += ["", f"## Occurrence {number}: {_local_time(item['at'])}", ""]
         parts += [f"Archive: {_code_span(item['archive'])}", ""]
-        if item.get("screenshot"):
-            parts += [f"![[{item['screenshot']}]]", ""]
         parts += ["### Traceback", "", _fenced(item["traceback"]), ""]
         parts += ["### Open tabs", "", _fenced(item["tabs"]), ""]
         parts += ["### Log tail", "", _fenced(item["log_tail"])]
@@ -423,10 +448,9 @@ def write_crash_note(
     The same repo with the same :func:`error_key` on the same local day adds
     an occurrence to one note; anything else gets a new note. Writing the same
     archive folder twice updates its occurrence instead of adding one. The
-    archived ``screenshot.png`` is copied beside the note as ``<stem>.png``
-    for occurrence 1 and ``<stem> N.png`` for occurrence N, up to
-    :data:`DETAIL_CAP`, and never over a file the note's record does not
-    already list as its own.
+    archived ``screenshot.png`` is never copied into the knowledge base and
+    the note embeds no image: it can show buyer details, so it stays in the
+    local archive folder that each occurrence names.
 
     Args:
         crash_dir (Path): The crash archive folder holding ``crash.json``.
@@ -480,6 +504,9 @@ def _write_note(
                 log.warning(f"Crash note not updated: the data line in {note} is missing or unreadable.")
                 return None, "the existing note's data line is missing or unreadable"
             data = existing
+            for item in data["occurrences"]:
+                # Written before screenshots were kept out of the vault; the name must not survive a rewrite.
+                item.pop("screenshot", None)
 
         occurrence = _occurrence(crash_dir, record, log_tail_text)
         archives = [str(item.get("archive", "")).casefold() for item in data["occurrences"]]
@@ -489,20 +516,8 @@ def _write_note(
             data["occurrences"].append(occurrence)
             index = len(data["occurrences"]) - 1
 
-        screenshot = crash_dir / "screenshot.png"
         if index >= DETAIL_CAP:
             occurrence.update(traceback=None, tabs=None, log_tail=None)
-        elif screenshot.is_file():
-            png = f"{note.stem}.png" if index == 0 else f"{note.stem} {index + 1}.png"
-            ours = {str(item.get("screenshot") or "").casefold() for item in data["occurrences"]}
-            if (note.parent / png).exists() and png.casefold() not in ours:
-                log.warning(f"Crash screenshot not copied: {note.parent / png} exists and is not this note's.")
-            else:
-                try:
-                    _atomic_write(note.parent / png, screenshot.read_bytes())
-                    occurrence["screenshot"] = png
-                except OSError:
-                    log.warning(f"Could not copy the crash screenshot beside {note}.", exc_info=True)
         data["occurrences"][index] = occurrence
         # Past DETAIL_CAP only the latest occurrence's summary is ever shown.
         for item in data["occurrences"][DETAIL_CAP:-1]:
