@@ -42,6 +42,31 @@
   so the prompt never shows the handler's own lines. Frames are read only
   inside a traceback's frames section; OneDrive online-only knowledge-base
   notes are skipped unopened; git calls give up after 10 s.
+- **`crash_notes` module** (Crash Explainer M3, step 2; not wired into
+  `handle_crash` yet). `write_crash_note` writes one knowledge-base note per
+  error per repo per day at `Crashes/<repo>/<YYYY-MM-DD> <ExceptionType> in
+  <file>-<function>.md`: frontmatter, an AI-generated label, the latest AI
+  summary (or `AI summary unavailable: <reason>`), every occurrence's time and
+  archive folder, and for the first 10 occurrences their screenshot (copied
+  beside the note, never over a file the note does not own), traceback, open
+  tabs and log tail. The same error on the same day adds
+  an occurrence. The note is regenerated from a one-line JSON record at its
+  end; a note whose record is unreadable, or that OneDrive keeps online-only,
+  is never overwritten. Model text has wikilinks, embeds, links, HTML,
+  comments, URL schemes and backticks (Dataview inline queries) and `::` (Dataview inline fields) broken and
+  stays on one source line. Captured text (traceback, tabs, log tail) has URL
+  query strings and token-shaped values masked, as in the crash prompt, is
+  capped at 20,000 characters per field (a traceback or log keeps its end),
+  and sits in fences it cannot close. The error key keeps only
+  `[A-Za-z0-9_.-]` in each part, capped, so an exception message cannot write
+  free text into a file name. Atomic writes; never raises.
+  `recent_crash_notes` lists a repo's older notes from their frontmatter; its
+  output is untrusted. `error_key` and `note_path` are public. Masking (here
+  and in the crash prompt) now also covers `pwd=` values, `Cookie:` and
+  `Set-Cookie:` headers and `Authorization: Basic` credentials.
+- **`crash_explainer.kb_note_path`**: the automation note lookup behind
+  `kb_note`, which now skips the `Crashes/` folder so a crash note (same
+  `repo:` line) never stands in for the automation note.
 - **`fleet_state.update_crash(crash_dir, **fields)`**: atomic merge into
   `crash.json` that never raises; a failure is logged as a warning.
   `mark_crash_emailed` now uses it.

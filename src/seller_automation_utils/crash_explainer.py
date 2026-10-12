@@ -73,8 +73,10 @@ __all__ = [
     "log_tail",
     "page_text",
     "previous_crashes",
+    "kb_note_path",
     "kb_note",
     "default_kb_dir",
+    "CRASH_NOTES_DIR",
     "build_prompt",
     "enabled",
     "DEFAULT_MODEL",
@@ -91,6 +93,8 @@ FILE_CAP = 200_000
 PAGE_TEXT_CAP = 20_000
 KB_NOTE_CAP = 50_000
 KB_DIR_ENV = "CRASH_AI_KB_DIR"
+# Top-level knowledge-base folder of the per-crash notes (crash_notes.py).
+CRASH_NOTES_DIR = "Crashes"
 TEXT_EXTENSIONS = (".py", ".bas", ".md", ".txt", ".example", ".toml", ".cfg", ".ini")
 # git runs inside the crash handler, so a wedged git (a lock, a slow network drive) must not hang it.
 GIT_TIMEOUT = 10
@@ -115,7 +119,12 @@ _SECRETS = (
     (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "(redacted)"),
     (re.compile(r"\beyJ[\w-]+(?:\.[\w-]+)*"), "(redacted)"),
     (re.compile(r"\b(Bearer\s+)[\w~+/.=-]{8,}"), r"\1(redacted)"),
-    (re.compile(r"""((?:password|secret|token|api_key)\s*=\s*["']?)[^\s&"',;)]+""", re.I), r"\1(redacted)"),
+    (re.compile(r"""\b(Authorization["']?\s*:\s*["']?Basic\s+)[\w+/=.-]+""", re.I), r"\1(redacted)"),
+    # A cookie header's value runs to the end of the line: it is ;-separated and may hold spaces.
+    (re.compile(r"""\b(Cookie["']?\s*:\s*)[^\r\n]+""", re.I), r"\1(redacted)"),
+    # An ODBC value in braces may hold ; and escapes } as }}.
+    (re.compile(r"""((?:password|pwd|secret|token|api_key)\s*=\s*["']?)(?:\{(?:[^}\r\n]|\}\})*\}?|[^\s&"',;)]+)""", re.I),
+     r"\1(redacted)"),
 )
 
 DEFAULT_MODEL = "gpt-5.5"
@@ -651,8 +660,41 @@ def previous_crashes(crash_root: Path, repo_name: str, before: datetime, current
     return "\n".join(row for _, row in sorted(rows)[-5:]) or "None archived."
 
 
+def kb_note_path(kb_dir: Path | None, repo_name: str) -> Path | None:
+    """The automation's own knowledge-base note: the first whose frontmatter says ``repo: <repo_name>``.
+
+    Only the first 600 bytes of each note are read to match the frontmatter.
+    Skipped: notes with ``PRD`` in the file name (a design document describes
+    what was planned, not what runs), everything under
+    :data:`CRASH_NOTES_DIR` (crash notes carry the same ``repo:`` line and
+    would otherwise shadow the automation note), and OneDrive cloud-only notes,
+    without being opened, so the crash handler never waits on a download.
+
+    Args:
+        kb_dir (Path | None): Root of the Markdown knowledge base.
+        repo_name (str): Directory name of the crashed repo.
+
+    Returns:
+        Path | None: The note, or None when there is no knowledge base or no
+            note matches.
+    """
+    if kb_dir is None or not kb_dir.is_dir():
+        return None
+    pattern = re.compile(rf'^repo:\s*"?{re.escape(repo_name)}"?\s*$', re.M)
+    crash_notes = kb_dir / CRASH_NOTES_DIR
+    try:
+        for note in sorted(kb_dir.rglob("*.md")):
+            if "PRD" in note.name or note.is_relative_to(crash_notes) or _cloud_only(note):
+                continue
+            if pattern.search(_head(note, 600)):
+                return note
+    except OSError:
+        pass
+    return None
+
+
 def kb_note(kb_dir: Path | None, repo_name: str) -> str:
-    """The knowledge-base note whose frontmatter says ``repo: <repo_name>``.
+    """The text of :func:`kb_note_path`'s note.
 
     Args:
         kb_dir (Path | None): Root of the Markdown knowledge base.
@@ -660,25 +702,11 @@ def kb_note(kb_dir: Path | None, repo_name: str) -> str:
 
     Returns:
         str: The note's text, up to :data:`KB_NOTE_CAP` characters, or
-            ``"None found."``. Only the first 600 bytes of each note are read
-            to match the frontmatter. Notes with ``PRD`` in the file name are
-            skipped: a design document describes what was planned, not what
-            runs. OneDrive cloud-only notes are skipped without being opened,
-            so the crash handler never waits on a download.
+            ``"None found."`` when no note matches or it cannot be read.
     """
-    if kb_dir is None or not kb_dir.is_dir():
-        return "None found."
-    pattern = re.compile(rf'^repo:\s*"?{re.escape(repo_name)}"?\s*$', re.M)
-    try:
-        for note in sorted(kb_dir.rglob("*.md")):
-            if "PRD" in note.name or _cloud_only(note):
-                continue
-            text = _read(note) if pattern.search(_head(note, 600)) else None
-            if text is not None:
-                return text[:KB_NOTE_CAP]
-    except OSError:
-        pass
-    return "None found."
+    note = kb_note_path(kb_dir, repo_name)
+    text = _read(note) if note is not None else None
+    return text[:KB_NOTE_CAP] if text is not None else "None found."
 
 
 def default_kb_dir() -> Path | None:
@@ -724,8 +752,9 @@ def _redact(text: str) -> str:
 
     Strips URL query strings and fragments (signed download links, session
     ids) but keeps scheme, host and path, then masks token shapes: ``sk-``
-    keys, AWS access key ids, JWTs, ``Bearer`` tokens and ``password=``,
-    ``secret=``, ``token=`` and ``api_key=`` values.
+    keys, AWS access key ids, JWTs, ``Bearer`` tokens, ``Authorization: Basic``
+    credentials, ``Cookie:`` and ``Set-Cookie:`` header values, and
+    ``password=``, ``pwd=``, ``secret=``, ``token=`` and ``api_key=`` values.
     """
     text = _URL_TAIL.sub(r"\1", text)
     for pattern, replacement in _SECRETS:
